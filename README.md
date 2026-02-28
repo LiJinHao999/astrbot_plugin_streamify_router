@@ -2,7 +2,8 @@
 
 LLM 非流请求稳流网关（AstrBot 插件）。
 
-将非流式请求自动转为流式拉取并聚合回完整响应，降低长耗时请求导致的连接超时风险；原本就是流式请求时直接透传 SSE。
+将非流请求转为流式，防止部分包装了cloudflare的中转因非流请求在2min内无响应，而超时自动关闭(429)
+解决神秘的 'NoneType' object has no attribute 'get' 问题；原本就是流式请求时直接透传 SSE。
 
 ## 主要能力
 
@@ -18,8 +19,8 @@ LLM 非流请求稳流网关（AstrBot 插件）。
 ## 使用方式
 
 1. 安装并启用插件。
-2. 在插件配置中填写 `providers`。
-3. 在 AstrBot provider 中将 `base_url` 设为 `http://localhost:<端口>/<路由名>`。
+2. 在插件配置中填写 `providers` , 设置转发端点
+3. 在 AstrBot provider 中 `base_url` 对应设为 `http://localhost:<端口，默认23456>/<路由名>`。
 
 ## 配置项
 
