@@ -191,6 +191,8 @@ class OpenAIChatHandler(ProviderHandler):
             "content_parts": [],
             "finish_reason": None,
             "tool_calls": {},
+            "tool_calls_seen": False,
+            "legacy_function_call_seen": False,
         }
 
     @staticmethod
@@ -201,33 +203,78 @@ class OpenAIChatHandler(ProviderHandler):
             "function": {"name": "", "arguments": []},
         }
 
-    def _update_tool_calls(self, slot: Dict[str, Any], delta: Dict[str, Any]) -> None:
-        tool_calls = delta.get("tool_calls")
-        if not isinstance(tool_calls, list):
-            return
+    @staticmethod
+    def _normalize_arguments_piece(arguments: Any) -> Optional[str]:
+        if isinstance(arguments, str):
+            return arguments
+        if arguments is None:
+            return None
+        try:
+            return json.dumps(arguments, separators=(",", ":"))
+        except (TypeError, ValueError):
+            return str(arguments)
 
-        for tool_call in tool_calls:
+    def _apply_function_payload(
+        self,
+        tc_slot: Dict[str, Any],
+        function_payload: Any,
+        append_arguments: bool,
+    ) -> None:
+        if not isinstance(function_payload, dict):
+            return
+        if isinstance(function_payload.get("name"), str):
+            tc_slot["function"]["name"] = function_payload["name"]
+        arguments_piece = self._normalize_arguments_piece(function_payload.get("arguments"))
+        if arguments_piece is None:
+            return
+        if append_arguments:
+            tc_slot["function"]["arguments"].append(arguments_piece)
+        else:
+            tc_slot["function"]["arguments"] = [arguments_piece]
+
+    def _update_tool_calls(
+        self,
+        slot: Dict[str, Any],
+        payload: Dict[str, Any],
+        append_arguments: bool,
+    ) -> None:
+        tool_calls = payload.get("tool_calls")
+        if isinstance(tool_calls, list):
+            slot["tool_calls_seen"] = True
+        for fallback_idx, tool_call in enumerate(tool_calls or []):
             if not isinstance(tool_call, dict):
                 continue
 
-            tc_idx = self._safe_int(tool_call.get("index", 0))
+            tc_idx = self._safe_int(tool_call.get("index", fallback_idx), fallback_idx)
             tc_slot = slot["tool_calls"].setdefault(tc_idx, self._new_tool_slot())
             if isinstance(tool_call.get("id"), str):
                 tc_slot["id"] = tool_call["id"]
             if isinstance(tool_call.get("type"), str):
                 tc_slot["type"] = tool_call["type"]
+            self._apply_function_payload(
+                tc_slot,
+                tool_call.get("function") or {},
+                append_arguments=append_arguments,
+            )
 
-            function = tool_call.get("function") or {}
-            if isinstance(function.get("name"), str):
-                tc_slot["function"]["name"] = function["name"]
-            arguments = function.get("arguments")
-            if isinstance(arguments, str):
-                tc_slot["function"]["arguments"].append(arguments)
+        function_call = payload.get("function_call")
+        if isinstance(function_call, dict):
+            slot["legacy_function_call_seen"] = True
+            tc_slot = slot["tool_calls"].setdefault(0, self._new_tool_slot())
+            self._apply_function_payload(
+                tc_slot,
+                function_call,
+                append_arguments=append_arguments,
+            )
 
     def _update_choice_slot(self, slot: Dict[str, Any], choice: Dict[str, Any]) -> None:
         delta = choice.get("delta") or {}
+        message = choice.get("message") or {}
+
         if isinstance(delta.get("role"), str):
             slot["role"] = delta["role"]
+        elif isinstance(message.get("role"), str):
+            slot["role"] = message["role"]
 
         content_delta = delta.get("content")
         if isinstance(content_delta, str):
@@ -240,7 +287,22 @@ class OpenAIChatHandler(ProviderHandler):
                 if isinstance(text, str):
                     slot["content_parts"].append(text)
 
-        self._update_tool_calls(slot, delta)
+        content_message = message.get("content")
+        if isinstance(content_message, str):
+            slot["content_parts"] = [content_message]
+        elif isinstance(content_message, list):
+            full_parts: List[str] = []
+            for part in content_message:
+                if not isinstance(part, dict):
+                    continue
+                text = part.get("text")
+                if isinstance(text, str):
+                    full_parts.append(text)
+            if full_parts:
+                slot["content_parts"] = full_parts
+
+        self._update_tool_calls(slot, delta, append_arguments=True)
+        self._update_tool_calls(slot, message, append_arguments=False)
 
         if choice.get("finish_reason") is not None:
             slot["finish_reason"] = choice.get("finish_reason")
@@ -265,6 +327,7 @@ class OpenAIChatHandler(ProviderHandler):
             "role": slot["role"],
             "content": "".join(slot["content_parts"]),
         }
+        inferred_finish_reason = "stop"
         if slot["tool_calls"]:
             assembled_tools = []
             for tc_idx in sorted(slot["tool_calls"].keys()):
@@ -279,14 +342,24 @@ class OpenAIChatHandler(ProviderHandler):
                         },
                     }
                 )
-            message["tool_calls"] = assembled_tools
+
+            if slot.get("tool_calls_seen"):
+                message["tool_calls"] = assembled_tools
+                inferred_finish_reason = "tool_calls"
+            elif slot.get("legacy_function_call_seen") and len(assembled_tools) == 1:
+                message["function_call"] = assembled_tools[0]["function"]
+                inferred_finish_reason = "function_call"
+            else:
+                message["tool_calls"] = assembled_tools
+                inferred_finish_reason = "tool_calls"
+
             if message["content"] == "":
                 message["content"] = None
 
         return {
             "index": idx,
             "message": message,
-            "finish_reason": slot["finish_reason"] or "stop",
+            "finish_reason": slot["finish_reason"] or inferred_finish_reason,
         }
 
     async def _build_non_stream_response(self, resp: ClientResponse) -> Dict[str, Any]:
@@ -521,7 +594,7 @@ class GeminiHandler(ProviderHandler):
     @staticmethod
     def _init_state() -> Dict[str, Any]:
         return {
-            "text_parts": [],
+            "content_parts": {},
             "candidate_meta": {},
             "role": "model",
             "usage_metadata": None,
@@ -538,19 +611,39 @@ class GeminiHandler(ProviderHandler):
         return candidate if isinstance(candidate, dict) else None
 
     @staticmethod
-    def _append_text_parts(state: Dict[str, Any], content: Dict[str, Any]) -> None:
+    def _merge_value(existing: Any, incoming: Any) -> Any:
+        if isinstance(existing, dict) and isinstance(incoming, dict):
+            merged = dict(existing)
+            for key, value in incoming.items():
+                if key in merged:
+                    merged[key] = GeminiHandler._merge_value(merged[key], value)
+                else:
+                    merged[key] = value
+            return merged
+        return incoming
+
+    @staticmethod
+    def _append_content_parts(state: Dict[str, Any], content: Dict[str, Any]) -> None:
         if isinstance(content.get("role"), str):
             state["role"] = content["role"]
 
         parts = content.get("parts")
         if not isinstance(parts, list):
             return
-        for part in parts:
+        for idx, part in enumerate(parts):
             if not isinstance(part, dict):
                 continue
+            slot = state["content_parts"].setdefault(idx, {})
             text = part.get("text")
             if isinstance(text, str):
-                state["text_parts"].append(text)
+                if isinstance(slot.get("text"), str):
+                    slot["text"] = f"{slot['text']}{text}"
+                else:
+                    slot["text"] = text
+            for key, value in part.items():
+                if key == "text":
+                    continue
+                slot[key] = GeminiHandler._merge_value(slot.get(key), value)
 
     @staticmethod
     def _merge_payload(state: Dict[str, Any], payload: Dict[str, Any]) -> None:
@@ -558,7 +651,7 @@ class GeminiHandler(ProviderHandler):
         if candidate is not None:
             content = candidate.get("content")
             if isinstance(content, dict):
-                GeminiHandler._append_text_parts(state, content)
+                GeminiHandler._append_content_parts(state, content)
 
             for key, value in candidate.items():
                 if key != "content":
@@ -583,9 +676,14 @@ class GeminiHandler(ProviderHandler):
             self._merge_payload(state, payload)
 
         candidate_out: Dict[str, Any] = dict(state["candidate_meta"])
+        merged_parts: List[Dict[str, Any]] = []
+        for idx in sorted(state["content_parts"].keys()):
+            part = state["content_parts"][idx]
+            if isinstance(part, dict):
+                merged_parts.append(part)
         candidate_out["content"] = {
             "role": state["role"],
-            "parts": [{"text": "".join(state["text_parts"])}],
+            "parts": merged_parts if merged_parts else [{"text": ""}],
         }
 
         response_data: Dict[str, Any] = {"candidates": [candidate_out]}

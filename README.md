@@ -23,6 +23,8 @@ LLM 非流请求稳流网关（AstrBot 插件）。
 - 流式解析改为按行处理 SSE，避免分块边界导致 UTF-8 多字节字符被截断后丢字。
 - 增加全局 `request_timeout` 超时控制，覆盖连接和读取阶段，防止上游长时间挂起导致协程堆积。
 - 对 `providers` 配置做统一类型归一化，配置异常时自动回退，减少运行期分支和空值问题。
+- OpenAI Chat 非流聚合增强工具调用兼容：同时支持 `delta.tool_calls`、`delta.function_call`、`choice.message.tool_calls`、`choice.message.function_call`，并兼容缺失 `index` 的分片聚合，降低工具调用中断概率。
+- Gemini 非流聚合保留完整 `content.parts`，支持文本与 `functionCall` 等非文本 part 合并，不再只拼接文本。
 
 ## 使用方式
 
