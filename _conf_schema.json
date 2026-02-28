@@ -15,7 +15,7 @@
     "description": "地址转发列表",
     "templates": {
       "provider": {
-        "name": "转发地址1",
+        "name": "转发地址",
         "hint": "AstrBot 中 base_url 设为 http://localhost:<端口>/<路由名>",
         "items": {
           "route_name": {
