@@ -1,6 +1,8 @@
-﻿from astrbot.api.event import AstrMessageEvent, filter
-from astrbot.api.star import Context, Star, register
+﻿from typing import Any, List
+
 from astrbot.api import AstrBotConfig, logger
+from astrbot.api.event import AstrMessageEvent, filter
+from astrbot.api.star import Context, Star, register
 
 from .proxy import StreamifyProxy
 
@@ -18,8 +20,12 @@ class StreamifyPlugin(Star):
         self.config = config
         self.proxy = None
 
+    def _get_provider_list(self) -> List[Any]:
+        providers = self.config.get("providers", [])
+        return providers if isinstance(providers, list) else []
+
     def _resolve_providers(self):
-        providers = self.config.get("providers", []) or []
+        providers = self._get_provider_list()
 
         # Backward compatibility for old single-target config.
         if not providers:
@@ -42,6 +48,26 @@ class StreamifyPlugin(Star):
             return value.strip().lower() in {"1", "true", "yes", "on"}
         return bool(value)
 
+    def _resolve_request_timeout(self) -> float:
+        default_timeout = 120.0
+        value = self.config.get("request_timeout", default_timeout)
+        try:
+            timeout = float(value)
+        except (TypeError, ValueError):
+            logger.warning(
+                "Invalid request_timeout=%r, fallback to %.1fs.", value, default_timeout
+            )
+            return default_timeout
+
+        if timeout <= 0:
+            logger.warning(
+                "Non-positive request_timeout=%r, fallback to %.1fs.",
+                value,
+                default_timeout,
+            )
+            return default_timeout
+        return timeout
+
     @staticmethod
     def _build_local_route_base(port: int, route_name: str) -> str:
         name = route_name.strip().strip("/")
@@ -50,9 +76,7 @@ class StreamifyPlugin(Star):
         return f"http://127.0.0.1:{port}/{name}"
 
     def _sync_provider_forward_urls(self, port: int) -> None:
-        providers = self.config.get("providers", []) or []
-        if not isinstance(providers, list):
-            return
+        providers = self._get_provider_list()
 
         changed = False
         for item in providers:
@@ -79,10 +103,16 @@ class StreamifyPlugin(Star):
 
         port = self.config.get("port", 23456)
         debug = self._is_debug_enabled()
+        request_timeout = self._resolve_request_timeout()
         self._sync_provider_forward_urls(port)
         providers = self._resolve_providers()
 
-        self.proxy = StreamifyProxy(port=port, providers=providers, debug=debug)
+        self.proxy = StreamifyProxy(
+            port=port,
+            providers=providers,
+            debug=debug,
+            request_timeout=request_timeout,
+        )
         await self.proxy.start()
 
     @filter.command("streamify")

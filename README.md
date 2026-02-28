@@ -17,6 +17,12 @@ LLM 非流请求稳流网关（AstrBot 插件）。
 - 每个路由可独立配置 `proxy_url`。
 - 可选调试日志：开启后输出每次请求的处理状态与耗时。
 
+## 更健壮的处理
+
+- 流式解析改为按行处理 SSE，避免分块边界导致 UTF-8 多字节字符被截断后丢字。
+- 增加全局 `request_timeout` 超时控制，覆盖连接和读取阶段，防止上游长时间挂起导致协程堆积。
+- 对 `providers` 配置做统一类型归一化，配置异常时自动回退，减少运行期分支和空值问题。
+
 ## 使用方式
 
 1. 安装并启用插件。
@@ -30,6 +36,7 @@ LLM 非流请求稳流网关（AstrBot 插件）。
 | `enabled` | bool | `true` | 是否启用代理 |
 | `debug` | bool | `false` | 是否输出调试日志（成功请求也会记录） |
 | `port` | int | `23456` | 本地监听端口 |
+| `request_timeout` | float | `120.0` | 上游请求全局超时（秒），用于连接/读取超时控制 |
 | `providers` | template_list | - | 多路由配置列表（`route_name`/`target_url`/`forward_url`/`proxy_url`） |
 
 ## 指令

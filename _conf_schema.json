@@ -1,51 +1,57 @@
-{
+﻿{
   "enabled": {
-    "description": "是否启用稳流代理",
+    "description": "Enable streamify proxy",
     "type": "bool",
     "default": true
   },
   "debug": {
-    "description": "是否启用调试日志",
+    "description": "Enable debug logging",
     "type": "bool",
     "default": false,
-    "hint": "开启后会为每次请求输出处理日志（方法、路径、目标地址、状态码、耗时）。"
+    "hint": "Log method, path, target and latency for each handled request"
   },
   "port": {
-    "description": "代理监听端口",
+    "description": "Local listen port",
     "type": "int",
     "default": 23456,
-    "hint": "本地代理服务监听的端口号"
+    "hint": "Local port used by the proxy server"
+  },
+  "request_timeout": {
+    "description": "Upstream request timeout (seconds)",
+    "type": "float",
+    "default": 120.0,
+    "hint": "Global connect/read timeout to avoid permanently hung upstream connections"
   },
   "providers": {
     "type": "template_list",
-    "description": "地址转发列表",
+    "description": "Provider route list",
     "templates": {
       "provider": {
-        "name": "转发地址",
-        "hint": "AstrBot 中 base_url 设置为 http://localhost:<端口>/<路由名>",
+        "name": "Provider",
+        "hint": "Set AstrBot provider base_url to http://localhost:<port>/<route_name>",
         "items": {
           "route_name": {
-            "description": "路由名",
+            "description": "Route name",
             "type": "string",
-            "hint": "AstrBot 中 base_url 设置为 http://localhost:<端口>/<路由名>"
+            "hint": "Used in local path: /<route_name>"
           },
           "target_url": {
-            "description": "目标 API 地址",
+            "description": "Upstream API base URL",
             "type": "string",
             "default": "https://api.openai.com",
-            "hint": "真实的 API 基础地址，只填基础地址即可，不需要带端点。请求格式会自动判断。"
+            "hint": "Only base URL is needed; endpoint path is auto matched"
           },
           "forward_url": {
-            "description": "本组应使用的转发地址（自动生成）",
+            "description": "Generated local forward URL",
             "type": "string",
             "default": "",
-            "hint": "插件会按端口 + route_name 自动填写，可在保存配置后直接复制，请不要修改此配置项。"
+            "hint": "Auto-generated from port + route_name"
           },
           "proxy_url": {
-            "description": "HTTP 代理地址（可选）",
+            "description": "HTTP proxy URL (optional)",
             "type": "string",
             "default": "",
-            "hint": "如 http://127.0.0.1:7890，留空则不使用代理"
+            "hint": "For example: http://127.0.0.1:7890"
           }
         }
       }

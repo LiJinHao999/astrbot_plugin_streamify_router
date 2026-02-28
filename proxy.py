@@ -17,11 +17,23 @@ class ProviderHandler:
         proxy_url: str = "",
         session: Optional[ClientSession] = None,
         debug: bool = False,
+        request_timeout: float = 120.0,
     ):
         self.target = target_url.rstrip("/")
         self.proxy = proxy_url.strip() or None
         self.session = session
         self.debug = bool(debug)
+        self.request_timeout = self._normalize_timeout(request_timeout)
+
+    @staticmethod
+    def _normalize_timeout(value: Any, default: float = 120.0) -> float:
+        try:
+            timeout = float(value)
+        except (TypeError, ValueError):
+            return default
+        if timeout <= 0:
+            return default
+        return timeout
 
     def _get_session(self) -> ClientSession:
         if self.session is None or self.session.closed:
@@ -29,6 +41,13 @@ class ProviderHandler:
         return self.session
 
     def _request(self, method: str, url: str, **kwargs):
+        if "timeout" not in kwargs:
+            kwargs["timeout"] = aiohttp.ClientTimeout(
+                total=None,
+                connect=self.request_timeout,
+                sock_connect=self.request_timeout,
+                sock_read=self.request_timeout,
+            )
         return self._get_session().request(method, url, proxy=self.proxy, **kwargs)
 
     def matches(self, sub_path: str) -> bool:
@@ -127,30 +146,26 @@ class ProviderHandler:
     async def _iter_sse_events(
         self, resp: ClientResponse
     ) -> AsyncIterator[Tuple[Optional[str], str]]:
-        buffer = ""
         event_name: Optional[str] = None
         data_lines: List[str] = []
 
-        async for chunk in resp.content.iter_any():
-            buffer += chunk.decode("utf-8", errors="ignore")
-            while "\n" in buffer:
-                raw_line, buffer = buffer.split("\n", 1)
-                line = raw_line.rstrip("\r")
+        async for raw_line in resp.content:
+            line = raw_line.decode("utf-8", errors="replace").rstrip("\r\n")
 
-                if line == "":
-                    if data_lines:
-                        yield event_name, "\n".join(data_lines)
-                    event_name = None
-                    data_lines = []
-                    continue
+            if line == "":
+                if data_lines:
+                    yield event_name, "\n".join(data_lines)
+                event_name = None
+                data_lines = []
+                continue
 
-                if line.startswith(":"):
-                    continue
-                if line.startswith("event:"):
-                    event_name = line[6:].strip()
-                    continue
-                if line.startswith("data:"):
-                    data_lines.append(line[5:].lstrip())
+            if line.startswith(":"):
+                continue
+            if line.startswith("event:"):
+                event_name = line[6:].strip()
+                continue
+            if line.startswith("data:"):
+                data_lines.append(line[5:].lstrip())
 
         if data_lines:
             yield event_name, "\n".join(data_lines)
@@ -515,24 +530,38 @@ class GeminiHandler(ProviderHandler):
         }
 
     @staticmethod
-    def _merge_payload(state: Dict[str, Any], payload: Dict[str, Any]) -> None:
+    def _first_candidate(payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         candidates = payload.get("candidates")
-        if isinstance(candidates, list) and candidates:
-            candidate = candidates[0]
-            if isinstance(candidate, dict):
-                content = candidate.get("content") or {}
-                if isinstance(content, dict):
-                    if isinstance(content.get("role"), str):
-                        state["role"] = content["role"]
-                    parts = content.get("parts")
-                    if isinstance(parts, list):
-                        for part in parts:
-                            if isinstance(part, dict) and isinstance(part.get("text"), str):
-                                state["text_parts"].append(part["text"])
+        if not isinstance(candidates, list) or not candidates:
+            return None
+        candidate = candidates[0]
+        return candidate if isinstance(candidate, dict) else None
 
-                for key, value in candidate.items():
-                    if key == "content":
-                        continue
+    @staticmethod
+    def _append_text_parts(state: Dict[str, Any], content: Dict[str, Any]) -> None:
+        if isinstance(content.get("role"), str):
+            state["role"] = content["role"]
+
+        parts = content.get("parts")
+        if not isinstance(parts, list):
+            return
+        for part in parts:
+            if not isinstance(part, dict):
+                continue
+            text = part.get("text")
+            if isinstance(text, str):
+                state["text_parts"].append(text)
+
+    @staticmethod
+    def _merge_payload(state: Dict[str, Any], payload: Dict[str, Any]) -> None:
+        candidate = GeminiHandler._first_candidate(payload)
+        if candidate is not None:
+            content = candidate.get("content")
+            if isinstance(content, dict):
+                GeminiHandler._append_text_parts(state, content)
+
+            for key, value in candidate.items():
+                if key != "content":
                     state["candidate_meta"][key] = value
 
         if isinstance(payload.get("usageMetadata"), dict):
@@ -684,6 +713,7 @@ class ProviderRoute:
         proxy_url: str = "",
         session: Optional[ClientSession] = None,
         debug: bool = False,
+        request_timeout: float = 120.0,
     ):
         self.route_name = route_name
         self.target_url = target_url.rstrip("/")
@@ -694,15 +724,36 @@ class ProviderRoute:
             self.proxy_url,
             session=session,
             debug=self.debug,
+            request_timeout=request_timeout,
         )
         self.handlers: List[ProviderHandler] = [
             OpenAIChatHandler(
-                self.target_url, self.proxy_url, session=session, debug=self.debug
+                self.target_url,
+                self.proxy_url,
+                session=session,
+                debug=self.debug,
+                request_timeout=request_timeout,
             ),
-            ClaudeHandler(self.target_url, self.proxy_url, session=session, debug=self.debug),
-            GeminiHandler(self.target_url, self.proxy_url, session=session, debug=self.debug),
+            ClaudeHandler(
+                self.target_url,
+                self.proxy_url,
+                session=session,
+                debug=self.debug,
+                request_timeout=request_timeout,
+            ),
+            GeminiHandler(
+                self.target_url,
+                self.proxy_url,
+                session=session,
+                debug=self.debug,
+                request_timeout=request_timeout,
+            ),
             OpenAIResponsesHandler(
-                self.target_url, self.proxy_url, session=session, debug=self.debug
+                self.target_url,
+                self.proxy_url,
+                session=session,
+                debug=self.debug,
+                request_timeout=request_timeout,
             ),
         ]
 
@@ -720,10 +771,12 @@ class StreamifyProxy:
         port: int = 23456,
         providers: Optional[List[Dict[str, Any]]] = None,
         debug: bool = False,
+        request_timeout: float = 120.0,
     ):
         self.port = port
         self.providers_config = providers or []
         self.debug = bool(debug)
+        self.request_timeout = ProviderHandler._normalize_timeout(request_timeout)
         self.providers: Dict[str, ProviderRoute] = {}
         self.session: Optional[ClientSession] = None
         self.app = web.Application(client_max_size=20 * 1024 * 1024)
@@ -766,6 +819,7 @@ class StreamifyProxy:
                 proxy_url,
                 session=self.session,
                 debug=self.debug,
+                request_timeout=self.request_timeout,
             )
 
     async def _dispatch(self, req: web.Request) -> web.Response:
