@@ -4,8 +4,7 @@
 
 LLM 非流请求稳流网关（AstrBot 插件）。
 
-将非流请求转为流式，防止部分包装了cloudflare的中转因非流请求在2min内无响应，而超时自动关闭(429)
-解决神秘的 'NoneType' object has no attribute 'get' 问题；原本就是流式请求时直接透传 SSE。
+将非流请求转为流式，在内部缓存拼接后返回，防止部分包装了cloudflare的中转因非流请求在2min内无响应，而超时自动关闭(429)，从而触发神秘的 'NoneType' object has no attribute 'get' 问题；原本就是流式请求时直接透传 SSE。
 
 ## 主要能力
 
