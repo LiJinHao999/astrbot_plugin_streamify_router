@@ -1,6 +1,5 @@
 name: astrbot_plugin_streamify_router
-display_name: LLM非流请求稳流网关
-desc: LLM非流请求稳流网关，将非流请求在请求过程中转为流式，保持连接，防止部分包装了cloudflare的中转因非流请求在2min内无响应，而超时自动关闭(429)，并触发 'NoneType' object has no attribute 'get' 问题
-version: v0.1.0
+display_name: Astrbot 无感稳流网关
+desc: LLM 稳流网关，提升 LLM 稳定性与使用体验，提供工具调用强化与假非流支持，无感强化工具调用体验，让你的小模型也能完美地function calling，无感解决非流式请求超时截断问题(429)，未来可能还有更多功能支持
 author: LiJinHao999
 repo: https://github.com/LiJinHao999/astrbot_plugin_streamify_router

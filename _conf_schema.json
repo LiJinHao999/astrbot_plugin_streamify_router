@@ -28,11 +28,11 @@
     "default": 2,
     "hint": "Gemini thinking 模式下工具调用参数为空时，注入提示并重试的最大次数，0 表示禁用"
   },
-  "gemini_extract_args": {
-    "description": "启用 Gemini 参数 JSON 提取增强",
+  "extract_args": {
+    "description": "启用工具参数 JSON 提取增强（适用于 Gemini/OpenAI/Claude）",
     "type": "bool",
     "default": false,
-    "hint": "开启后，若重试后参数仍为空，会额外发送一条请求让模型单独输出 JSON 参数，再注入回原响应"
+    "hint": "开启后，若工具调用参数为空或无效，会额外发送一条请求让模型单独输出 JSON 参数，再注入回原响应"
   },
   "providers": {
     "type": "template_list",

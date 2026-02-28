@@ -203,6 +203,18 @@ class ProviderHandler:
 class OpenAIChatHandler(ProviderHandler):
     ENDPOINT = "v1/chat/completions"
 
+    def __init__(
+        self,
+        target_url: str,
+        proxy_url: str = "",
+        session=None,
+        debug: bool = False,
+        request_timeout: float = 120.0,
+        extract_args: bool = False,
+    ):
+        super().__init__(target_url, proxy_url, session=session, debug=debug, request_timeout=request_timeout)
+        self.extract_args = bool(extract_args)
+
     def matches(self, sub_path: str) -> bool:
         return sub_path.strip("/") == self.ENDPOINT
 
@@ -431,6 +443,97 @@ class OpenAIChatHandler(ProviderHandler):
             result["id"] = f"chatcmpl-proxy-{int(time.time() * 1000)}"
         return result
 
+    @staticmethod
+    def _find_failed_function_call(response_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        for choice in response_data.get("choices", []):
+            message = (choice.get("message") or {})
+            for tc in (message.get("tool_calls") or []):
+                if not isinstance(tc, dict):
+                    continue
+                fn = tc.get("function") or {}
+                args = fn.get("arguments", "")
+                if not args or args == "{}":
+                    return tc
+                try:
+                    json.loads(args)
+                except json.JSONDecodeError:
+                    return tc
+        return None
+
+    @staticmethod
+    def _patch_function_call_args(
+        response_data: Dict[str, Any], function_name: str, args: Dict[str, Any]
+    ) -> None:
+        for choice in response_data.get("choices", []):
+            message = (choice.get("message") or {})
+            for tc in (message.get("tool_calls") or []):
+                if not isinstance(tc, dict):
+                    continue
+                fn = tc.get("function") or {}
+                if fn.get("name") == function_name:
+                    fn["arguments"] = json.dumps(args)
+                    return
+
+    async def _extract_args_as_json(
+        self,
+        original_body: Dict[str, Any],
+        function_name: str,
+        sub_path: str,
+        headers: Dict[str, str],
+    ) -> Optional[Dict[str, Any]]:
+        func_desc = ""
+        func_schema: Dict[str, Any] = {}
+        for tool in original_body.get("tools", []):
+            fn = (tool.get("function") or {})
+            if fn.get("name") == function_name:
+                func_desc = fn.get("description", "")
+                func_schema = fn.get("parameters", {})
+                break
+
+        tool_system = (
+            f"你是一个参数提取助手。用户正在使用工具 `{function_name}`。\n"
+            f"工具说明：{func_desc}\n"
+            f"参数 schema：{json.dumps(func_schema, ensure_ascii=False)}\n"
+            f"根据对话内容，只输出调用该工具所需的 JSON 参数对象，不要包含任何其他文字。"
+        )
+
+        messages = [{"role": "system", "content": tool_system}]
+        for msg in original_body.get("messages", []):
+            if isinstance(msg, dict) and msg.get("role") != "system":
+                messages.append(msg)
+
+        extract_body: Dict[str, Any] = {
+            "model": original_body.get("model", ""),
+            "messages": messages,
+            "response_format": {"type": "json_object"},
+            "stream": True,
+        }
+
+        try:
+            async with self._request(
+                "POST",
+                self._build_url(sub_path),
+                json=extract_body,
+                headers=headers,
+            ) as resp:
+                if resp.status != 200:
+                    return None
+                result = await self._build_non_stream_response(resp)
+                choices = result.get("choices", [])
+                if not choices:
+                    return None
+                content = (choices[0].get("message") or {}).get("content", "")
+                if not content:
+                    return None
+                content = content.strip()
+                if content.startswith("```"):
+                    lines = content.splitlines()
+                    content = "\n".join(lines[1:-1] if lines[-1].strip() == "```" else lines[1:])
+                parsed = json.loads(content)
+                return parsed if isinstance(parsed, dict) else None
+        except Exception:
+            return None
+
     async def handle(self, req: web.Request, sub_path: str) -> web.Response:
         if req.method.upper() != "POST" or not self.matches(sub_path):
             return await self._passthrough(req, sub_path)
@@ -459,11 +562,38 @@ class OpenAIChatHandler(ProviderHandler):
                 )
 
             result = await self._build_non_stream_response(resp)
-            return web.json_response(result)
+
+        if self.extract_args:
+            failed_tc = self._find_failed_function_call(result)
+            if failed_tc is not None:
+                function_name = (failed_tc.get("function") or {}).get("name", "")
+                extracted = await self._extract_args_as_json(
+                    body, function_name, sub_path, headers
+                )
+                if extracted is not None:
+                    self._patch_function_call_args(result, function_name, extracted)
+                    if self.debug:
+                        logger.info("Streamify: 成功提取 OpenAI 工具 %s 的参数: %s", function_name, extracted)
+                elif self.debug:
+                    logger.info("Streamify: OpenAI JSON 参数提取失败，返回原始响应")
+
+        return web.json_response(result)
 
 
 class ClaudeHandler(ProviderHandler):
     ENDPOINT = "v1/messages"
+
+    def __init__(
+        self,
+        target_url: str,
+        proxy_url: str = "",
+        session=None,
+        debug: bool = False,
+        request_timeout: float = 120.0,
+        extract_args: bool = False,
+    ):
+        super().__init__(target_url, proxy_url, session=session, debug=debug, request_timeout=request_timeout)
+        self.extract_args = bool(extract_args)
 
     def matches(self, sub_path: str) -> bool:
         return sub_path.strip("/") == self.ENDPOINT
@@ -584,6 +714,81 @@ class ClaudeHandler(ProviderHandler):
             "usage": state["usage"],
         }
 
+    @staticmethod
+    def _find_failed_function_call(response_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        for block in response_data.get("content", []):
+            if not isinstance(block, dict):
+                continue
+            if block.get("type") == "tool_use" and not block.get("input"):
+                return block
+        return None
+
+    @staticmethod
+    def _patch_function_call_args(
+        response_data: Dict[str, Any], function_name: str, args: Dict[str, Any]
+    ) -> None:
+        for block in response_data.get("content", []):
+            if not isinstance(block, dict):
+                continue
+            if block.get("type") == "tool_use" and block.get("name") == function_name:
+                block["input"] = args
+                return
+
+    async def _extract_args_as_json(
+        self,
+        original_body: Dict[str, Any],
+        function_name: str,
+        sub_path: str,
+        headers: Dict[str, str],
+    ) -> Optional[Dict[str, Any]]:
+        func_desc = ""
+        input_schema: Dict[str, Any] = {}
+        for tool in original_body.get("tools", []):
+            if not isinstance(tool, dict):
+                continue
+            if tool.get("name") == function_name:
+                func_desc = tool.get("description", "")
+                input_schema = tool.get("input_schema", {})
+                break
+
+        tool_system = (
+            f"你是一个参数提取助手。用户正在使用工具 `{function_name}`。\n"
+            f"工具说明：{func_desc}\n"
+            f"参数 schema：{json.dumps(input_schema, ensure_ascii=False)}\n"
+            f"根据对话内容，只输出调用该工具所需的 JSON 参数对象，不要包含任何其他文字。"
+        )
+
+        extract_body: Dict[str, Any] = {
+            "model": original_body.get("model", ""),
+            "max_tokens": original_body.get("max_tokens", 1024),
+            "system": tool_system,
+            "messages": original_body.get("messages", []),
+            "stream": True,
+        }
+
+        try:
+            async with self._request(
+                "POST",
+                self._build_url(sub_path),
+                json=extract_body,
+                headers=headers,
+            ) as resp:
+                if resp.status != 200:
+                    return None
+                result = await self._build_non_stream_response(resp)
+                for block in result.get("content", []):
+                    if isinstance(block, dict) and block.get("type") == "text":
+                        text = block.get("text", "").strip()
+                        if text:
+                            if text.startswith("```"):
+                                lines = text.splitlines()
+                                text = "\n".join(lines[1:-1] if lines[-1].strip() == "```" else lines[1:])
+                            parsed = json.loads(text)
+                            return parsed if isinstance(parsed, dict) else None
+                return None
+        except Exception:
+            return None
+
     async def handle(self, req: web.Request, sub_path: str) -> web.Response:
         if req.method.upper() != "POST" or not self.matches(sub_path):
             return await self._passthrough(req, sub_path)
@@ -612,8 +817,22 @@ class ClaudeHandler(ProviderHandler):
                 )
 
             response_data = await self._build_non_stream_response(resp)
-            return web.json_response(response_data)
 
+        if self.extract_args:
+            failed_block = self._find_failed_function_call(response_data)
+            if failed_block is not None:
+                function_name = failed_block.get("name", "")
+                extracted = await self._extract_args_as_json(
+                    body, function_name, sub_path, headers
+                )
+                if extracted is not None:
+                    self._patch_function_call_args(response_data, function_name, extracted)
+                    if self.debug:
+                        logger.info("Streamify: 成功提取 Claude 工具 %s 的参数: %s", function_name, extracted)
+                elif self.debug:
+                    logger.info("Streamify: Claude JSON 参数提取失败，返回原始响应")
+
+        return web.json_response(response_data)
 
 class GeminiHandler(ProviderHandler):
     def __init__(
@@ -624,11 +843,11 @@ class GeminiHandler(ProviderHandler):
         debug: bool = False,
         request_timeout: float = 120.0,
         gemini_fix_retries: int = 2,
-        gemini_extract_args: bool = False,
+        extract_args: bool = False,
     ):
         super().__init__(target_url, proxy_url, session=session, debug=debug, request_timeout=request_timeout)
         self.gemini_fix_retries = max(0, int(gemini_fix_retries))
-        self.gemini_extract_args = bool(gemini_extract_args)
+        self.extract_args = bool(extract_args)
 
     def matches(self, sub_path: str) -> bool:
         path = sub_path.strip("/")
@@ -754,8 +973,46 @@ class GeminiHandler(ProviderHandler):
         headers = self._forward_headers(req)
         params = {k: v for k, v in req.query.items()}
         params["alt"] = "sse"
-        current_body = body
-        for attempt in range(self.gemini_fix_retries + 1):
+
+        async with self._request(
+            "POST",
+            self._build_url(stream_path),
+            json=body,
+            headers=headers,
+            params=params,
+        ) as resp:
+            if resp.status != 200:
+                return web.Response(
+                    status=resp.status,
+                    headers=self._response_headers(resp),
+                    text=await resp.text(),
+                )
+            response_data = await self._build_non_stream_response(resp)
+
+        if not self._has_failed_function_call(response_data):
+            return web.json_response(response_data)
+
+        if self.extract_args:
+            failed_fc = self._find_failed_function_call(response_data)
+            if failed_fc is not None:
+                extracted = await self._extract_args_as_json(
+                    body, failed_fc.get("name", ""), stream_path, headers, params
+                )
+                if extracted is not None:
+                    self._patch_function_call_args(response_data, failed_fc.get("name", ""), extracted)
+                    if self.debug:
+                        logger.info("Streamify: 成功提取 %s 的参数: %s", failed_fc.get("name"), extracted)
+                    return web.json_response(response_data)
+                elif self.debug:
+                    logger.info("Streamify: JSON 参数提取失败，尝试提示注入重试")
+
+        for attempt in range(self.gemini_fix_retries):
+            if self.debug:
+                logger.info(
+                    "Streamify: 检测到空工具参数，注入提示后重试 (%d/%d)",
+                    attempt + 1, self.gemini_fix_retries,
+                )
+            current_body = self._inject_hint(body)
             async with self._request(
                 "POST",
                 self._build_url(stream_path),
@@ -769,36 +1026,33 @@ class GeminiHandler(ProviderHandler):
                         headers=self._response_headers(resp),
                         text=await resp.text(),
                     )
-
                 response_data = await self._build_non_stream_response(resp)
 
-            if not self._has_empty_function_call(response_data):
-                break
-            if attempt < self.gemini_fix_retries:
-                if self.debug:
-                    logger.info(
-                        "Streamify: 检测到空工具参数，注入提示后重试 (%d/%d)",
-                        attempt + 1, self.gemini_fix_retries,
-                    )
-                current_body = self._inject_hint(body)
+            if not self._has_failed_function_call(response_data):
+                return web.json_response(response_data)
 
-        if self.gemini_extract_args and self._has_empty_function_call(response_data):
-            empty_fc = self._find_empty_function_call(response_data)
-            if empty_fc is not None:
-                extracted = await self._extract_args_as_json(
-                    body, empty_fc.get("name", ""), stream_path, headers, params
-                )
-                if extracted is not None:
-                    self._patch_function_call_args(response_data, empty_fc.get("name", ""), extracted)
-                    if self.debug:
-                        logger.info("Streamify: 成功提取 %s 的参数: %s", empty_fc.get("name"), extracted)
-                elif self.debug:
-                    logger.info("Streamify: JSON 参数提取失败，返回原始响应")
-
-        return web.json_response(response_data)
+        failed_fc = self._find_failed_function_call(response_data)
+        function_name = failed_fc.get("name", "unknown") if failed_fc else "unknown"
+        logger.warning(
+            "Streamify: 工具 %s 参数在 %d 次重试后仍为空，放弃调用",
+            function_name, self.gemini_fix_retries,
+        )
+        return web.json_response(
+            {
+                "error": {
+                    "code": 500,
+                    "message": (
+                        f"Gemini 未能为工具 `{function_name}` 生成有效参数，"
+                        f"已重试 {self.gemini_fix_retries} 次仍失败。"
+                    ),
+                    "status": "FUNCTION_CALL_ARGS_EMPTY",
+                }
+            },
+            status=500,
+        )
 
     @staticmethod
-    def _has_empty_function_call(response_data: Dict[str, Any]) -> bool:
+    def _has_failed_function_call(response_data: Dict[str, Any]) -> bool:
         for candidate in response_data.get("candidates", []):
             for part in candidate.get("content", {}).get("parts", []):
                 fc = part.get("functionCall")
@@ -820,7 +1074,7 @@ class GeminiHandler(ProviderHandler):
         return body
 
     @staticmethod
-    def _find_empty_function_call(response_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    def _find_failed_function_call(response_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         for candidate in response_data.get("candidates", []):
             for part in candidate.get("content", {}).get("parts", []):
                 fc = part.get("functionCall")
@@ -997,7 +1251,7 @@ class ProviderRoute:
         debug: bool = False,
         request_timeout: float = 120.0,
         gemini_fix_retries: int = 2,
-        gemini_extract_args: bool = False,
+        extract_args: bool = False,
     ):
         self.route_name = route_name
         self.target_url = target_url.rstrip("/")
@@ -1017,6 +1271,7 @@ class ProviderRoute:
                 session=session,
                 debug=self.debug,
                 request_timeout=request_timeout,
+                extract_args=extract_args,
             ),
             ClaudeHandler(
                 self.target_url,
@@ -1024,6 +1279,7 @@ class ProviderRoute:
                 session=session,
                 debug=self.debug,
                 request_timeout=request_timeout,
+                extract_args=extract_args,
             ),
             GeminiHandler(
                 self.target_url,
@@ -1032,7 +1288,7 @@ class ProviderRoute:
                 debug=self.debug,
                 request_timeout=request_timeout,
                 gemini_fix_retries=gemini_fix_retries,
-                gemini_extract_args=gemini_extract_args,
+                extract_args=extract_args,
             ),
             OpenAIResponsesHandler(
                 self.target_url,
@@ -1059,14 +1315,14 @@ class StreamifyProxy:
         debug: bool = False,
         request_timeout: float = 120.0,
         gemini_fix_retries: int = 2,
-        gemini_extract_args: bool = False,
+        extract_args: bool = False,
     ):
         self.port = port
         self.providers_config = providers or []
         self.debug = bool(debug)
         self.request_timeout = ProviderHandler._normalize_timeout(request_timeout)
         self.gemini_fix_retries = max(0, int(gemini_fix_retries))
-        self.gemini_extract_args = bool(gemini_extract_args)
+        self.extract_args = bool(extract_args)
         self.providers: Dict[str, ProviderRoute] = {}
         self.session: Optional[ClientSession] = None
         self._debug_log_path = pathlib.Path(__file__).parent / "debug_requests.log"
@@ -1112,7 +1368,7 @@ class StreamifyProxy:
                 debug=self.debug,
                 request_timeout=self.request_timeout,
                 gemini_fix_retries=self.gemini_fix_retries,
-                gemini_extract_args=self.gemini_extract_args,
+                extract_args=self.extract_args,
             )
 
     async def _dispatch(self, req: web.Request) -> web.Response:
