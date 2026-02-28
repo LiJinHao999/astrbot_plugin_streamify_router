@@ -7,7 +7,7 @@
   "port": {
     "description": "代理监听端口",
     "type": "int",
-    "default": 6190,
+    "default": 23456,
     "hint": "本地代理服务监听的端口号"
   },
   "providers": {

@@ -39,7 +39,7 @@ class StreamifyPlugin(Star):
             logger.info("Streamify proxy disabled")
             return
 
-        port = self.config.get("port", 6190)
+        port = self.config.get("port", 23456)
         providers = self._resolve_providers()
 
         self.proxy = StreamifyProxy(port=port, providers=providers)
@@ -52,7 +52,7 @@ class StreamifyPlugin(Star):
             yield event.plain_result("稳流代理未运行")
             return
 
-        port = self.config.get("port", 6190)
+        port = self.config.get("port", 23456)
         routes = self.proxy.get_route_infos()
 
         if not routes:

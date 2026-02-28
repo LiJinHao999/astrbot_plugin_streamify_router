@@ -21,35 +21,12 @@ LLM 非流请求稳流网关（AstrBot 插件）。
 2. 在插件配置中填写 `providers`。
 3. 在 AstrBot provider 中将 `base_url` 设为 `http://localhost:<端口>/<路由名>`。
 
-示例：
-
-```json
-{
-  "enabled": true,
-  "port": 6190,
-  "providers": [
-    {
-      "__template_key": "provider",
-      "route_name": "my-openai",
-      "target_url": "https://api.openai.com",
-      "proxy_url": ""
-    },
-    {
-      "__template_key": "provider",
-      "route_name": "my-claude",
-      "target_url": "https://api.anthropic.com",
-      "proxy_url": "http://127.0.0.1:7890"
-    }
-  ]
-}
-```
-
 ## 配置项
 
 | 配置项 | 类型 | 默认值 | 说明 |
 |---|---|---|---|
 | `enabled` | bool | `true` | 是否启用代理 |
-| `port` | int | `6190` | 本地监听端口 |
+| `port` | int | `23456` | 本地监听端口 |
 | `providers` | template_list | - | 多路由配置列表（`route_name`/`target_url`/`proxy_url`） |
 
 ## 指令

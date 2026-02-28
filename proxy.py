@@ -634,7 +634,7 @@ class ProviderRoute:
 
 
 class StreamifyProxy:
-    def __init__(self, port: int = 6190, providers: Optional[List[Dict[str, Any]]] = None):
+    def __init__(self, port: int = 23456, providers: Optional[List[Dict[str, Any]]] = None):
         self.port = port
         self.providers_config = providers or []
         self.providers: Dict[str, ProviderRoute] = {}
