@@ -1,4 +1,6 @@
 ﻿import json
+import pathlib
+import re
 import time
 from typing import Any, AsyncIterator, Dict, List, Optional, Tuple
 
@@ -6,6 +8,25 @@ import aiohttp
 from aiohttp import ClientResponse, ClientSession, web
 
 from astrbot.api import logger
+
+# 匹配长 base64/base32 字符串（≥64 个字符）
+_LONG_BASE64_RE = re.compile(r'^[A-Za-z0-9+/\-_]{64,}={0,3}$')
+
+
+def _sanitize_for_log(obj: Any, _depth: int = 0) -> Any:
+    """递归将请求体中的长 base64/data-URI 字符串替换为占位符，避免刷屏。"""
+    if _depth > 20:
+        return "..."
+    if isinstance(obj, dict):
+        return {k: _sanitize_for_log(v, _depth + 1) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_sanitize_for_log(item, _depth + 1) for item in obj]
+    if isinstance(obj, str):
+        if obj.startswith("data:"):
+            return f"<data_uri {len(obj)} chars>"
+        if len(obj) > 100 and _LONG_BASE64_RE.match(obj):
+            return f"<base64 {len(obj)} chars>"
+    return obj
 
 
 class ProviderHandler:
@@ -877,6 +898,7 @@ class StreamifyProxy:
         self.request_timeout = ProviderHandler._normalize_timeout(request_timeout)
         self.providers: Dict[str, ProviderRoute] = {}
         self.session: Optional[ClientSession] = None
+        self._debug_log_path = pathlib.Path(__file__).parent / "debug_requests.log"
         self.app = web.Application(client_max_size=20 * 1024 * 1024)
         self.app.add_routes(
             [
@@ -942,6 +964,29 @@ class StreamifyProxy:
                 },
                 status=404,
             )
+
+        if self.debug and req.method.upper() in {"POST", "PUT", "PATCH"}:
+            path_text = f"/{route_name}"
+            if sub_path:
+                path_text = f"{path_text}/{sub_path.strip('/')}"
+            try:
+                raw = await req.read()
+                if raw:
+                    try:
+                        body_obj = json.loads(raw)
+                        sanitized = _sanitize_for_log(body_obj)
+                        body_repr = json.dumps(sanitized, ensure_ascii=False)
+                    except Exception:
+                        body_repr = f"<{len(raw)} bytes, non-JSON>"
+                    ts = time.strftime("%Y-%m-%d %H:%M:%S")
+                    try:
+                        with open(self._debug_log_path, "a", encoding="utf-8") as _f:
+                            _f.write(f"[{ts}] {req.method.upper()} {path_text} -> {provider.target_url}\n")
+                            _f.write(body_repr + "\n\n")
+                    except Exception as _write_exc:
+                        logger.warning("Streamify debug: 写入请求体日志失败: %s", _write_exc)
+            except Exception:
+                pass
 
         try:
             response = await provider.dispatch(req, sub_path)
