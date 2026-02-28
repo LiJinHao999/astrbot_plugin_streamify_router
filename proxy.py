@@ -624,9 +624,11 @@ class GeminiHandler(ProviderHandler):
         debug: bool = False,
         request_timeout: float = 120.0,
         gemini_fix_retries: int = 2,
+        gemini_extract_args: bool = False,
     ):
         super().__init__(target_url, proxy_url, session=session, debug=debug, request_timeout=request_timeout)
         self.gemini_fix_retries = max(0, int(gemini_fix_retries))
+        self.gemini_extract_args = bool(gemini_extract_args)
 
     def matches(self, sub_path: str) -> bool:
         path = sub_path.strip("/")
@@ -779,6 +781,20 @@ class GeminiHandler(ProviderHandler):
                         attempt + 1, self.gemini_fix_retries,
                     )
                 current_body = self._inject_hint(body)
+
+        if self.gemini_extract_args and self._has_empty_function_call(response_data):
+            empty_fc = self._find_empty_function_call(response_data)
+            if empty_fc is not None:
+                extracted = await self._extract_args_as_json(
+                    body, empty_fc.get("name", ""), stream_path, headers, params
+                )
+                if extracted is not None:
+                    self._patch_function_call_args(response_data, empty_fc.get("name", ""), extracted)
+                    if self.debug:
+                        logger.info("Streamify: 成功提取 %s 的参数: %s", empty_fc.get("name"), extracted)
+                elif self.debug:
+                    logger.info("Streamify: JSON 参数提取失败，返回原始响应")
+
         return web.json_response(response_data)
 
     @staticmethod
@@ -802,6 +818,95 @@ class GeminiHandler(ProviderHandler):
         else:
             body["systemInstruction"] = {"parts": [hint_part]}
         return body
+
+    @staticmethod
+    def _find_empty_function_call(response_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        for candidate in response_data.get("candidates", []):
+            for part in candidate.get("content", {}).get("parts", []):
+                fc = part.get("functionCall")
+                if isinstance(fc, dict) and not fc.get("args"):
+                    return fc
+        return None
+
+    @staticmethod
+    def _patch_function_call_args(
+        response_data: Dict[str, Any], function_name: str, args: Dict[str, Any]
+    ) -> None:
+        for candidate in response_data.get("candidates", []):
+            for part in candidate.get("content", {}).get("parts", []):
+                fc = part.get("functionCall")
+                if isinstance(fc, dict) and fc.get("name") == function_name and not fc.get("args"):
+                    fc["args"] = args
+                    return
+
+    async def _extract_args_as_json(
+        self,
+        original_body: Dict[str, Any],
+        function_name: str,
+        stream_path: str,
+        headers: Dict[str, str],
+        params: Dict[str, str],
+    ) -> Optional[Dict[str, Any]]:
+        """单独发一条请求，让模型只输出函数参数的 JSON，然后解析返回。"""
+        schema_hint = ""
+        for tool in original_body.get("tools", []):
+            for fd in tool.get("functionDeclarations", []):
+                if fd.get("name") == function_name:
+                    props = fd.get("parameters", {}).get("properties", {})
+                    if props:
+                        schema_hint = f"参数格式：{json.dumps(props, ensure_ascii=False)}"
+                    break
+
+        contents = list(original_body.get("contents", []))
+        contents.append({
+            "role": "user",
+            "parts": [{"text": (
+                f"你刚才决定调用 `{function_name}` 但没有提供任何参数。"
+                f"请根据对话内容，只输出该函数调用所需的 JSON 参数对象，不要输出任何其他文字。"
+                f"{schema_hint}"
+            )}],
+        })
+
+        extract_body: Dict[str, Any] = {"contents": contents}
+        if "systemInstruction" in original_body:
+            extract_body["systemInstruction"] = original_body["systemInstruction"]
+        gen_cfg = dict(original_body.get("generationConfig") or {})
+        gen_cfg["responseMimeType"] = "application/json"
+        extract_body["generationConfig"] = gen_cfg
+        # 不传 tools，避免模型再次发出空的 functionCall
+
+        try:
+            async with self._request(
+                "POST",
+                self._build_url(stream_path),
+                json=extract_body,
+                headers=headers,
+                params=params,
+            ) as resp:
+                if resp.status != 200:
+                    return None
+                text_parts: List[str] = []
+                async for _event, data in self._iter_sse_events(resp):
+                    if not data:
+                        continue
+                    try:
+                        chunk = json.loads(data)
+                        for cand in chunk.get("candidates", []):
+                            for part in cand.get("content", {}).get("parts", []):
+                                if isinstance(part.get("text"), str):
+                                    text_parts.append(part["text"])
+                    except Exception:
+                        continue
+                text = "".join(text_parts).strip()
+                if not text:
+                    return None
+                if text.startswith("```"):
+                    lines = text.splitlines()
+                    text = "\n".join(lines[1:-1] if lines[-1].strip() == "```" else lines[1:])
+                result = json.loads(text)
+                return result if isinstance(result, dict) else None
+        except Exception:
+            return None
 
 
 class OpenAIResponsesHandler(ProviderHandler):
@@ -888,6 +993,7 @@ class ProviderRoute:
         debug: bool = False,
         request_timeout: float = 120.0,
         gemini_fix_retries: int = 2,
+        gemini_extract_args: bool = False,
     ):
         self.route_name = route_name
         self.target_url = target_url.rstrip("/")
@@ -922,6 +1028,7 @@ class ProviderRoute:
                 debug=self.debug,
                 request_timeout=request_timeout,
                 gemini_fix_retries=gemini_fix_retries,
+                gemini_extract_args=gemini_extract_args,
             ),
             OpenAIResponsesHandler(
                 self.target_url,
@@ -948,12 +1055,14 @@ class StreamifyProxy:
         debug: bool = False,
         request_timeout: float = 120.0,
         gemini_fix_retries: int = 2,
+        gemini_extract_args: bool = False,
     ):
         self.port = port
         self.providers_config = providers or []
         self.debug = bool(debug)
         self.request_timeout = ProviderHandler._normalize_timeout(request_timeout)
         self.gemini_fix_retries = max(0, int(gemini_fix_retries))
+        self.gemini_extract_args = bool(gemini_extract_args)
         self.providers: Dict[str, ProviderRoute] = {}
         self.session: Optional[ClientSession] = None
         self._debug_log_path = pathlib.Path(__file__).parent / "debug_requests.log"
@@ -999,6 +1108,7 @@ class StreamifyProxy:
                 debug=self.debug,
                 request_timeout=self.request_timeout,
                 gemini_fix_retries=self.gemini_fix_retries,
+                gemini_extract_args=self.gemini_extract_args,
             )
 
     async def _dispatch(self, req: web.Request) -> web.Response:
