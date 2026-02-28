@@ -1,0 +1,42 @@
+{
+  "enabled": {
+    "description": "是否启用稳流代理",
+    "type": "bool",
+    "default": true
+  },
+  "port": {
+    "description": "代理监听端口",
+    "type": "int",
+    "default": 6190,
+    "hint": "本地代理服务监听的端口号"
+  },
+  "providers": {
+    "type": "template_list",
+    "description": "地址转发列表",
+    "templates": {
+      "provider": {
+        "name": "转发地址1",
+        "hint": "AstrBot 中 base_url 设为 http://localhost:<端口>/<路由名>",
+        "items": {
+          "route_name": {
+            "description": "路由名",
+            "type": "string",
+            "hint": "AstrBot 中 base_url 设为 http://localhost:<端口>/<路由名>"
+          },
+          "target_url": {
+            "description": "目标 API 地址",
+            "type": "string",
+            "default": "https://api.openai.com",
+            "hint": "真实的 API 基础地址，只填基础地址即可，不需要带端点。请求格式会自动判断。"
+          },
+          "proxy_url": {
+            "description": "HTTP 代理地址（可选）",
+            "type": "string",
+            "default": "",
+            "hint": "如 http://127.0.0.1:7890，留空则不使用代理"
+          }
+        }
+      }
+    }
+  }
+}
