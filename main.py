@@ -34,15 +34,55 @@ class StreamifyPlugin(Star):
                 ]
         return providers
 
+    def _is_debug_enabled(self) -> bool:
+        value = self.config.get("debug", False)
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            return value.strip().lower() in {"1", "true", "yes", "on"}
+        return bool(value)
+
+    @staticmethod
+    def _build_local_route_base(port: int, route_name: str) -> str:
+        name = route_name.strip().strip("/")
+        if not name:
+            name = "<route_name>"
+        return f"http://127.0.0.1:{port}/{name}"
+
+    def _sync_provider_forward_urls(self, port: int) -> None:
+        providers = self.config.get("providers", []) or []
+        if not isinstance(providers, list):
+            return
+
+        changed = False
+        for item in providers:
+            if not isinstance(item, dict):
+                continue
+
+            route_name = str(item.get("route_name", "")).strip()
+            expected = self._build_local_route_base(port, route_name)
+            if item.get("forward_url") != expected:
+                item["forward_url"] = expected
+                changed = True
+
+        if changed:
+            self.config["providers"] = providers
+            try:
+                self.config.save_config()
+            except Exception as exc:
+                logger.warning("Failed to save generated provider forward_url: %s", exc)
+
     async def initialize(self):
         if not self.config.get("enabled", True):
             logger.info("Streamify proxy disabled")
             return
 
         port = self.config.get("port", 23456)
+        debug = self._is_debug_enabled()
+        self._sync_provider_forward_urls(port)
         providers = self._resolve_providers()
 
-        self.proxy = StreamifyProxy(port=port, providers=providers)
+        self.proxy = StreamifyProxy(port=port, providers=providers, debug=debug)
         await self.proxy.start()
 
     @filter.command("streamify")
@@ -61,12 +101,20 @@ class StreamifyPlugin(Star):
             )
             return
 
-        lines = ["稳流代理运行中", f"监听: http://127.0.0.1:{port}", "路由列表:"]
+        debug = self._is_debug_enabled()
+        lines = [
+            "稳流代理运行中",
+            f"监听: http://127.0.0.1:{port}",
+            f"调试日志: {'on' if debug else 'off'}",
+            "路由列表:",
+        ]
         for info in routes:
             proxy_url = info["proxy_url"] if info["proxy_url"] else "(none)"
+            local_base = self._build_local_route_base(port, info["route_name"])
             lines.append(
                 f"- /{info['route_name']} -> {info['target_url']} (proxy: {proxy_url})"
             )
+            lines.append(f"  base_url: {local_base}")
 
         yield event.plain_result("\n".join(lines))
 

@@ -11,9 +11,10 @@ from astrbot.api import logger
 class ProviderHandler:
     """Base handler for forwarding and stream utilities."""
 
-    def __init__(self, target_url: str, proxy_url: str = ""):
+    def __init__(self, target_url: str, proxy_url: str = "", debug: bool = False):
         self.target = target_url.rstrip("/")
         self.proxy = proxy_url.strip() or None
+        self.debug = bool(debug)
 
     def matches(self, sub_path: str) -> bool:
         return False
@@ -613,16 +614,23 @@ class OpenAIResponsesHandler(ProviderHandler):
 
 
 class ProviderRoute:
-    def __init__(self, route_name: str, target_url: str, proxy_url: str = ""):
+    def __init__(
+        self,
+        route_name: str,
+        target_url: str,
+        proxy_url: str = "",
+        debug: bool = False,
+    ):
         self.route_name = route_name
         self.target_url = target_url.rstrip("/")
         self.proxy_url = proxy_url.strip()
-        self.base = ProviderHandler(self.target_url, self.proxy_url)
+        self.debug = bool(debug)
+        self.base = ProviderHandler(self.target_url, self.proxy_url, self.debug)
         self.handlers: List[ProviderHandler] = [
-            OpenAIChatHandler(self.target_url, self.proxy_url),
-            ClaudeHandler(self.target_url, self.proxy_url),
-            GeminiHandler(self.target_url, self.proxy_url),
-            OpenAIResponsesHandler(self.target_url, self.proxy_url),
+            OpenAIChatHandler(self.target_url, self.proxy_url, self.debug),
+            ClaudeHandler(self.target_url, self.proxy_url, self.debug),
+            GeminiHandler(self.target_url, self.proxy_url, self.debug),
+            OpenAIResponsesHandler(self.target_url, self.proxy_url, self.debug),
         ]
 
     async def dispatch(self, req: web.Request, sub_path: str) -> web.Response:
@@ -634,9 +642,15 @@ class ProviderRoute:
 
 
 class StreamifyProxy:
-    def __init__(self, port: int = 23456, providers: Optional[List[Dict[str, Any]]] = None):
+    def __init__(
+        self,
+        port: int = 23456,
+        providers: Optional[List[Dict[str, Any]]] = None,
+        debug: bool = False,
+    ):
         self.port = port
         self.providers_config = providers or []
+        self.debug = bool(debug)
         self.providers: Dict[str, ProviderRoute] = {}
         self.app = web.Application(client_max_size=20 * 1024 * 1024)
         self.app.add_routes(
@@ -669,14 +683,25 @@ class StreamifyProxy:
             if route_name in self.providers:
                 logger.warning("Duplicate route_name %s, overwrite previous target.", route_name)
 
-            self.providers[route_name] = ProviderRoute(route_name, target_url, proxy_url)
+            self.providers[route_name] = ProviderRoute(
+                route_name,
+                target_url,
+                proxy_url,
+                debug=self.debug,
+            )
 
     async def _dispatch(self, req: web.Request) -> web.Response:
         route_name = req.match_info.get("route_name", "").strip("/")
         sub_path = req.match_info.get("sub_path", "")
+        start_time = time.perf_counter()
 
         provider = self.providers.get(route_name)
         if provider is None:
+            if self.debug:
+                path_text = f"/{route_name}"
+                if sub_path:
+                    path_text = f"{path_text}/{sub_path.strip('/')}"
+                logger.info("Streamify debug route miss: %s %s", req.method.upper(), path_text)
             return web.json_response(
                 {
                     "error": {
@@ -689,7 +714,21 @@ class StreamifyProxy:
             )
 
         try:
-            return await provider.dispatch(req, sub_path)
+            response = await provider.dispatch(req, sub_path)
+            if self.debug:
+                path_text = f"/{route_name}"
+                if sub_path:
+                    path_text = f"{path_text}/{sub_path.strip('/')}"
+                elapsed_ms = int((time.perf_counter() - start_time) * 1000)
+                logger.info(
+                    "Streamify debug handled: %s %s -> %s status=%s elapsed=%dms",
+                    req.method.upper(),
+                    path_text,
+                    provider.target_url,
+                    response.status,
+                    elapsed_ms,
+                )
+            return response
         except Exception as exc:
             logger.exception("Proxy dispatch failed for route %s: %s", route_name, exc)
             return web.json_response(
@@ -723,6 +762,8 @@ class StreamifyProxy:
         await self.site.start()
 
         logger.info("Streamify proxy started at http://127.0.0.1:%s", self.port)
+        if self.debug:
+            logger.info("Streamify debug logging enabled.")
         if not self.providers:
             logger.warning("No provider routes configured.")
         else:

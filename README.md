@@ -15,6 +15,7 @@ LLM 非流请求稳流网关（AstrBot 插件）。
   - Gemini Generate Content: `:generateContent` / `:streamGenerateContent`
   - OpenAI Responses: `/v1/responses`
 - 每个路由可独立配置 `proxy_url`。
+- 可选调试日志：开启后输出每次请求的处理状态与耗时。
 
 ## 使用方式
 
@@ -27,8 +28,9 @@ LLM 非流请求稳流网关（AstrBot 插件）。
 | 配置项 | 类型 | 默认值 | 说明 |
 |---|---|---|---|
 | `enabled` | bool | `true` | 是否启用代理 |
+| `debug` | bool | `false` | 是否输出调试日志（成功请求也会记录） |
 | `port` | int | `23456` | 本地监听端口 |
-| `providers` | template_list | - | 多路由配置列表（`route_name`/`target_url`/`proxy_url`） |
+| `providers` | template_list | - | 多路由配置列表（`route_name`/`target_url`/`forward_url`/`proxy_url`） |
 
 ## 指令
 

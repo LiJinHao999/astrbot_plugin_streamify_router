@@ -4,6 +4,12 @@
     "type": "bool",
     "default": true
   },
+  "debug": {
+    "description": "是否启用调试日志",
+    "type": "bool",
+    "default": false,
+    "hint": "开启后会为每次请求输出处理日志（方法、路径、目标地址、状态码、耗时）。"
+  },
   "port": {
     "description": "代理监听端口",
     "type": "int",
@@ -16,18 +22,24 @@
     "templates": {
       "provider": {
         "name": "转发地址",
-        "hint": "AstrBot 中 base_url 设为 http://localhost:<端口>/<路由名>",
+        "hint": "AstrBot 中 base_url 设置为 http://localhost:<端口>/<路由名>",
         "items": {
           "route_name": {
             "description": "路由名",
             "type": "string",
-            "hint": "AstrBot 中 base_url 设为 http://localhost:<端口>/<路由名>"
+            "hint": "AstrBot 中 base_url 设置为 http://localhost:<端口>/<路由名>"
           },
           "target_url": {
             "description": "目标 API 地址",
             "type": "string",
             "default": "https://api.openai.com",
             "hint": "真实的 API 基础地址，只填基础地址即可，不需要带端点。请求格式会自动判断。"
+          },
+          "forward_url": {
+            "description": "本组应使用的转发地址（自动生成）",
+            "type": "string",
+            "default": "",
+            "hint": "插件会按端口 + route_name 自动填写，可在保存配置后直接复制，请不要修改此配置项。"
           },
           "proxy_url": {
             "description": "HTTP 代理地址（可选）",
