@@ -847,33 +847,37 @@ class GeminiHandler(ProviderHandler):
         headers: Dict[str, str],
         params: Dict[str, str],
     ) -> Optional[Dict[str, Any]]:
-        """单独发一条请求，让模型只输出函数参数的 JSON，然后解析返回。"""
-        schema_hint = ""
+        """构造聚焦请求：只含工具说明 + 参数 schema + 对话上下文，让模型输出 JSON 参数。"""
+        # 找到目标工具的完整声明
+        func_desc = ""
+        func_params_schema: Dict[str, Any] = {}
         for tool in original_body.get("tools", []):
             for fd in tool.get("functionDeclarations", []):
                 if fd.get("name") == function_name:
-                    props = fd.get("parameters", {}).get("properties", {})
-                    if props:
-                        schema_hint = f"参数格式：{json.dumps(props, ensure_ascii=False)}"
+                    func_desc = fd.get("description", "")
+                    func_params_schema = fd.get("parameters", {})
                     break
 
-        contents = list(original_body.get("contents", []))
-        contents.append({
-            "role": "user",
-            "parts": [{"text": (
-                f"你刚才决定调用 `{function_name}` 但没有提供任何参数。"
-                f"请根据对话内容，只输出该函数调用所需的 JSON 参数对象，不要输出任何其他文字。"
-                f"{schema_hint}"
-            )}],
-        })
+        # 构造聚焦的 system instruction，只包含工具说明，过滤掉原有 system
+        tool_system = (
+            f"你是一个参数提取助手。用户正在使用工具 `{function_name}`。\n"
+            f"工具说明：{func_desc}\n"
+            f"参数 schema：{json.dumps(func_params_schema, ensure_ascii=False)}\n"
+            f"根据对话内容，只输出调用该工具所需的 JSON 参数对象，不要包含任何其他文字。"
+        )
 
-        extract_body: Dict[str, Any] = {"contents": contents}
-        if "systemInstruction" in original_body:
-            extract_body["systemInstruction"] = original_body["systemInstruction"]
+        # 只保留对话上下文（user/model 轮次），不传原 system
+        contents = list(original_body.get("contents", []))
+
         gen_cfg = dict(original_body.get("generationConfig") or {})
         gen_cfg["responseMimeType"] = "application/json"
-        extract_body["generationConfig"] = gen_cfg
-        # 不传 tools，避免模型再次发出空的 functionCall
+
+        extract_body: Dict[str, Any] = {
+            "contents": contents,
+            "systemInstruction": {"parts": [{"text": tool_system}]},
+            "generationConfig": gen_cfg,
+            # 不传 tools，避免模型再次发出空的 functionCall
+        }
 
         try:
             async with self._request(
