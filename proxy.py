@@ -29,6 +29,14 @@ def _sanitize_for_log(obj: Any, _depth: int = 0) -> Any:
     return obj
 
 
+# 注入到请求的提示，引导模型正确填写工具参数
+_EMPTY_ARGS_HINT = (
+    "IMPORTANT: When calling a tool/function, you MUST provide valid JSON for ALL "
+    "required arguments. Never invoke a tool with an empty argument object {} if the "
+    "tool has required parameters. Fill every required field before calling the tool."
+)
+
+
 class ProviderHandler:
     """Base handler for forwarding and stream utilities."""
 
@@ -608,6 +616,18 @@ class ClaudeHandler(ProviderHandler):
 
 
 class GeminiHandler(ProviderHandler):
+    def __init__(
+        self,
+        target_url: str,
+        proxy_url: str = "",
+        session=None,
+        debug: bool = False,
+        request_timeout: float = 120.0,
+        gemini_fix_retries: int = 2,
+    ):
+        super().__init__(target_url, proxy_url, session=session, debug=debug, request_timeout=request_timeout)
+        self.gemini_fix_retries = max(0, int(gemini_fix_retries))
+
     def matches(self, sub_path: str) -> bool:
         path = sub_path.strip("/")
         return ":generateContent" in path or ":streamGenerateContent" in path
@@ -732,22 +752,56 @@ class GeminiHandler(ProviderHandler):
         headers = self._forward_headers(req)
         params = {k: v for k, v in req.query.items()}
         params["alt"] = "sse"
-        async with self._request(
-            "POST",
-            self._build_url(stream_path),
-            json=body,
-            headers=headers,
-            params=params,
-        ) as resp:
-            if resp.status != 200:
-                return web.Response(
-                    status=resp.status,
-                    headers=self._response_headers(resp),
-                    text=await resp.text(),
-                )
+        current_body = body
+        for attempt in range(self.gemini_fix_retries + 1):
+            async with self._request(
+                "POST",
+                self._build_url(stream_path),
+                json=current_body,
+                headers=headers,
+                params=params,
+            ) as resp:
+                if resp.status != 200:
+                    return web.Response(
+                        status=resp.status,
+                        headers=self._response_headers(resp),
+                        text=await resp.text(),
+                    )
 
-            response_data = await self._build_non_stream_response(resp)
-            return web.json_response(response_data)
+                response_data = await self._build_non_stream_response(resp)
+
+            if not self._has_empty_function_call(response_data):
+                break
+            if attempt < self.gemini_fix_retries:
+                if self.debug:
+                    logger.info(
+                        "Streamify: 检测到空工具参数，注入提示后重试 (%d/%d)",
+                        attempt + 1, self.gemini_fix_retries,
+                    )
+                current_body = self._inject_hint(body)
+        return web.json_response(response_data)
+
+    @staticmethod
+    def _has_empty_function_call(response_data: Dict[str, Any]) -> bool:
+        for candidate in response_data.get("candidates", []):
+            for part in candidate.get("content", {}).get("parts", []):
+                fc = part.get("functionCall")
+                if isinstance(fc, dict) and not fc.get("args"):
+                    return True
+        return False
+
+    @staticmethod
+    def _inject_hint(body: Dict[str, Any]) -> Dict[str, Any]:
+        body = dict(body)
+        hint_part = {"text": _EMPTY_ARGS_HINT}
+        sys_inst = body.get("systemInstruction")
+        if isinstance(sys_inst, dict):
+            parts = list(sys_inst.get("parts", []))
+            parts.append(hint_part)
+            body["systemInstruction"] = {**sys_inst, "parts": parts}
+        else:
+            body["systemInstruction"] = {"parts": [hint_part]}
+        return body
 
 
 class OpenAIResponsesHandler(ProviderHandler):
@@ -833,6 +887,7 @@ class ProviderRoute:
         session: Optional[ClientSession] = None,
         debug: bool = False,
         request_timeout: float = 120.0,
+        gemini_fix_retries: int = 2,
     ):
         self.route_name = route_name
         self.target_url = target_url.rstrip("/")
@@ -866,6 +921,7 @@ class ProviderRoute:
                 session=session,
                 debug=self.debug,
                 request_timeout=request_timeout,
+                gemini_fix_retries=gemini_fix_retries,
             ),
             OpenAIResponsesHandler(
                 self.target_url,
@@ -891,11 +947,13 @@ class StreamifyProxy:
         providers: Optional[List[Dict[str, Any]]] = None,
         debug: bool = False,
         request_timeout: float = 120.0,
+        gemini_fix_retries: int = 2,
     ):
         self.port = port
         self.providers_config = providers or []
         self.debug = bool(debug)
         self.request_timeout = ProviderHandler._normalize_timeout(request_timeout)
+        self.gemini_fix_retries = max(0, int(gemini_fix_retries))
         self.providers: Dict[str, ProviderRoute] = {}
         self.session: Optional[ClientSession] = None
         self._debug_log_path = pathlib.Path(__file__).parent / "debug_requests.log"
@@ -940,6 +998,7 @@ class StreamifyProxy:
                 session=self.session,
                 debug=self.debug,
                 request_timeout=self.request_timeout,
+                gemini_fix_retries=self.gemini_fix_retries,
             )
 
     async def _dispatch(self, req: web.Request) -> web.Response:

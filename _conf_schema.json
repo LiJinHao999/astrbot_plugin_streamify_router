@@ -22,6 +22,12 @@
     "default": 120.0,
     "hint": "全局连接/读取超时，防止上游连接永久挂起"
   },
+  "gemini_fix_retries": {
+    "description": "Gemini 空参数自动重试次数",
+    "type": "int",
+    "default": 5,
+    "hint": "Gemini thinking 模式下工具调用参数为空时，注入提示并重试的最大次数，0 表示禁用"
+  },
   "providers": {
     "type": "template_list",
     "description": "提供商路由列表",

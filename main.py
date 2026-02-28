@@ -112,6 +112,7 @@ class StreamifyPlugin(Star):
             providers=providers,
             debug=debug,
             request_timeout=request_timeout,
+            gemini_fix_retries=self.config.get("gemini_fix_retries", 2),
         )
         await self.proxy.start()
 
