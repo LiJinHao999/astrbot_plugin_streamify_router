@@ -965,35 +965,36 @@ class StreamifyProxy:
                 status=404,
             )
 
-        if self.debug and req.method.upper() in {"POST", "PUT", "PATCH"}:
-            path_text = f"/{route_name}"
-            if sub_path:
-                path_text = f"{path_text}/{sub_path.strip('/')}"
+        path_text = f"/{route_name}"
+        if sub_path:
+            path_text = f"{path_text}/{sub_path.strip('/')}"
+
+        if self.debug:
             try:
-                raw = await req.read()
-                if raw:
-                    try:
-                        body_obj = json.loads(raw)
-                        sanitized = _sanitize_for_log(body_obj)
-                        body_repr = json.dumps(sanitized, ensure_ascii=False)
-                    except Exception:
-                        body_repr = f"<{len(raw)} bytes, non-JSON>"
-                    ts = time.strftime("%Y-%m-%d %H:%M:%S")
-                    try:
-                        with open(self._debug_log_path, "a", encoding="utf-8") as _f:
-                            _f.write(f"[{ts}] {req.method.upper()} {path_text} -> {provider.target_url}\n")
-                            _f.write(body_repr + "\n\n")
-                    except Exception as _write_exc:
-                        logger.warning("Streamify debug: 写入请求体日志失败: %s", _write_exc)
-            except Exception:
-                pass
+                if req.method.upper() in {"POST", "PUT", "PATCH"}:
+                    raw = await req.read()
+                    if raw:
+                        try:
+                            body_obj = json.loads(raw)
+                            sanitized = _sanitize_for_log(body_obj)
+                            detail = json.dumps(sanitized, ensure_ascii=False)
+                        except Exception:
+                            detail = f"<{len(raw)} bytes, non-JSON>"
+                    else:
+                        detail = "<empty body>"
+                else:
+                    qs = dict(req.query)
+                    detail = json.dumps(qs, ensure_ascii=False) if qs else "<no query>"
+                ts = time.strftime("%Y-%m-%d %H:%M:%S")
+                with open(self._debug_log_path, "a", encoding="utf-8") as _f:
+                    _f.write(f"[{ts}] >>> {req.method.upper()} {path_text} -> {provider.target_url}\n")
+                    _f.write(detail + "\n\n")
+            except Exception as _exc:
+                logger.warning("Streamify debug: 写入请求日志失败: %s", _exc)
 
         try:
             response = await provider.dispatch(req, sub_path)
             if self.debug:
-                path_text = f"/{route_name}"
-                if sub_path:
-                    path_text = f"{path_text}/{sub_path.strip('/')}"
                 elapsed_ms = int((time.perf_counter() - start_time) * 1000)
                 logger.info(
                     "Streamify debug handled: %s %s -> %s status=%s elapsed=%dms",
@@ -1003,6 +1004,27 @@ class StreamifyProxy:
                     response.status,
                     elapsed_ms,
                 )
+                try:
+                    if isinstance(response, web.Response) and response.body:
+                        content_type = response.content_type or ""
+                        if "json" in content_type or "text" in content_type:
+                            body_text = response.body.decode("utf-8", errors="replace")
+                            try:
+                                resp_obj = json.loads(body_text)
+                                sanitized_resp = _sanitize_for_log(resp_obj)
+                                resp_detail = json.dumps(sanitized_resp, ensure_ascii=False)
+                            except Exception:
+                                resp_detail = body_text[:2000]
+                        else:
+                            resp_detail = f"<{len(response.body)} bytes, {content_type}>"
+                    else:
+                        resp_detail = "<streaming response>"
+                    ts = time.strftime("%Y-%m-%d %H:%M:%S")
+                    with open(self._debug_log_path, "a", encoding="utf-8") as _f:
+                        _f.write(f"[{ts}] <<< {req.method.upper()} {path_text} status={response.status} elapsed={elapsed_ms}ms\n")
+                        _f.write(resp_detail + "\n\n")
+                except Exception as _exc:
+                    logger.warning("Streamify debug: 写入响应日志失败: %s", _exc)
             return response
         except Exception as exc:
             logger.exception("Proxy dispatch failed for route %s: %s", route_name, exc)
