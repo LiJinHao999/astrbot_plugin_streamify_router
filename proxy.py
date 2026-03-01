@@ -60,6 +60,26 @@ class ProviderHandler:
         self.fix_retries = max(0, int(fix_retries))
         patterns = tool_error_patterns if tool_error_patterns is not None else _DEFAULT_TOOL_ERROR_PATTERNS
         self._error_patterns: List[Pattern[str]] = _compile_error_patterns(patterns)
+        self._hint_tools_path = (
+            pathlib.Path(__file__).parent
+            / f"hint_tools_{self.__class__.__name__.lower()}.json"
+        )
+        try:
+            self._hint_tools: set = set(
+                json.loads(self._hint_tools_path.read_text("utf-8"))
+            )
+        except Exception:
+            self._hint_tools: set = set()
+
+    def _remember_hint_tool(self, tool_name: str) -> None:
+        self._hint_tools.add(tool_name)
+        try:
+            self._hint_tools_path.write_text(
+                json.dumps(sorted(self._hint_tools), ensure_ascii=False),
+                encoding="utf-8",
+            )
+        except Exception:
+            pass
 
     @staticmethod
     def _normalize_timeout(value: Any, default: float = 120.0) -> float:
@@ -210,6 +230,21 @@ class ProviderHandler:
 class OpenAIChatHandler(ProviderHandler, OpenAIFakeNonStream, OpenAIFCEnhance):
     ENDPOINT = "v1/chat/completions"
 
+    def _find_hinted_empty_tc(self, result: dict) -> Optional[dict]:
+        for choice in (result.get("choices") or []):
+            for tc in ((choice.get("message") or {}).get("tool_calls") or []):
+                fn = tc.get("function") or {}
+                if fn.get("name", "") not in self._hint_tools:
+                    continue
+                args = fn.get("arguments", "")
+                try:
+                    parsed = json.loads(args) if isinstance(args, str) and args else {}
+                except Exception:
+                    parsed = {}
+                if not parsed:
+                    return tc
+        return None
+
     def matches(self, sub_path: str) -> bool:
         return sub_path.strip("/") == self.ENDPOINT
 
@@ -245,6 +280,7 @@ class OpenAIChatHandler(ProviderHandler, OpenAIFakeNonStream, OpenAIFCEnhance):
                             "Streamify [Layer2]: 修正 OpenAI 工具 %s 的参数: %s",
                             tool_name, extracted,
                         )
+                    self._remember_hint_tool(tool_name)
                     return web.json_response(
                         self._build_corrected_tool_response(
                             tool_call_id, tool_name, extracted, body.get("model", "")
@@ -281,8 +317,10 @@ class OpenAIChatHandler(ProviderHandler, OpenAIFakeNonStream, OpenAIFCEnhance):
                 )
             result = await self._build_non_stream_response(resp)
 
-        # 提前检查：无失败 FC 则直接返回
+        # 提前检查：无失败 FC 则直接返回（含记忆工具兜底）
         failed_tc = self._find_failed_function_call(result, clean_body.get("tools", []))
+        if failed_tc is None and self._hint_tools:
+            failed_tc = self._find_hinted_empty_tc(result)
         if failed_tc is None:
             return web.json_response(result)
 
@@ -327,6 +365,8 @@ class OpenAIChatHandler(ProviderHandler, OpenAIFakeNonStream, OpenAIFCEnhance):
                     )
                 result = await self._build_non_stream_response(resp)
             failed_tc = self._find_failed_function_call(result, clean_body.get("tools", []))
+            if failed_tc is None and self._hint_tools:
+                failed_tc = self._find_hinted_empty_tc(result)
             if failed_tc is None:
                 return web.json_response(result)
             if self.extract_args:
@@ -348,6 +388,17 @@ class OpenAIChatHandler(ProviderHandler, OpenAIFakeNonStream, OpenAIFCEnhance):
 
 class ClaudeHandler(ProviderHandler, ClaudeFakeNonStream, ClaudeFCEnhance):
     ENDPOINT = "v1/messages"
+
+    def _find_hinted_empty_block(self, result: dict) -> Optional[dict]:
+        for block in (result.get("content") or []):
+            if block.get("type") != "tool_use":
+                continue
+            if block.get("name", "") not in self._hint_tools:
+                continue
+            inp = block.get("input")
+            if not inp or (isinstance(inp, dict) and not inp):
+                return block
+        return None
 
     def matches(self, sub_path: str) -> bool:
         return sub_path.strip("/") == self.ENDPOINT
@@ -384,6 +435,7 @@ class ClaudeHandler(ProviderHandler, ClaudeFakeNonStream, ClaudeFCEnhance):
                             "Streamify [Layer2]: 修正 Claude 工具 %s 的参数: %s",
                             tool_name, extracted,
                         )
+                    self._remember_hint_tool(tool_name)
                     return web.json_response(
                         self._build_corrected_tool_response(
                             tool_use_id, tool_name, extracted, body.get("model", "")
@@ -420,8 +472,10 @@ class ClaudeHandler(ProviderHandler, ClaudeFakeNonStream, ClaudeFCEnhance):
                 )
             result = await self._build_non_stream_response(resp)
 
-        # 提前检查：无失败 FC 则直接返回
+        # 提前检查：无失败 FC 则直接返回（含记忆工具兜底）
         failed_tc = self._find_failed_function_call(result, clean_body.get("tools", []))
+        if failed_tc is None and self._hint_tools:
+            failed_tc = self._find_hinted_empty_block(result)
         if failed_tc is None:
             return web.json_response(result)
 
@@ -466,6 +520,8 @@ class ClaudeHandler(ProviderHandler, ClaudeFakeNonStream, ClaudeFCEnhance):
                     )
                 result = await self._build_non_stream_response(resp)
             failed_tc = self._find_failed_function_call(result, clean_body.get("tools", []))
+            if failed_tc is None and self._hint_tools:
+                failed_tc = self._find_hinted_empty_block(result)
             if failed_tc is None:
                 return web.json_response(result)
             if self.extract_args:
@@ -486,6 +542,20 @@ class ClaudeHandler(ProviderHandler, ClaudeFakeNonStream, ClaudeFCEnhance):
 
 
 class GeminiHandler(ProviderHandler, GeminiFakeNonStream, GeminiFCEnhance):
+
+    def _find_hinted_empty_fc(self, response_data: dict) -> Optional[dict]:
+        for candidate in (response_data.get("candidates") or []):
+            for part in ((candidate.get("content") or {}).get("parts") or []):
+                fc = part.get("functionCall")
+                if not isinstance(fc, dict):
+                    continue
+                if fc.get("name", "") not in self._hint_tools:
+                    continue
+                args = fc.get("args")
+                if not args or (isinstance(args, dict) and not args):
+                    return fc
+        return None
+
     def matches(self, sub_path: str) -> bool:
         path = sub_path.strip("/")
         return ":generateContent" in path or ":streamGenerateContent" in path
@@ -525,6 +595,7 @@ class GeminiHandler(ProviderHandler, GeminiFakeNonStream, GeminiFCEnhance):
                             "Streamify [Layer2]: 修正 Gemini 工具 %s 的参数: %s",
                             tool_name, extracted,
                         )
+                    self._remember_hint_tool(tool_name)
                     return web.json_response(
                         self._build_corrected_tool_response(tool_name, extracted)
                     )
@@ -560,7 +631,10 @@ class GeminiHandler(ProviderHandler, GeminiFakeNonStream, GeminiFCEnhance):
                 )
             response_data = await self._build_non_stream_response(resp)
 
-        if not self._has_failed_function_call(response_data, tools):
+        has_failed = self._has_failed_function_call(response_data, tools)
+        if not has_failed and self._hint_tools:
+            has_failed = self._find_hinted_empty_fc(response_data) is not None
+        if not has_failed:
             return web.json_response(response_data)
 
         # Layer 1 (Proactive): 对照 schema 提取参数
@@ -605,7 +679,10 @@ class GeminiHandler(ProviderHandler, GeminiFakeNonStream, GeminiFCEnhance):
                     )
                 response_data = await self._build_non_stream_response(resp)
 
-            if not self._has_failed_function_call(response_data, tools):
+            has_failed = self._has_failed_function_call(response_data, tools)
+            if not has_failed and self._hint_tools:
+                has_failed = self._find_hinted_empty_fc(response_data) is not None
+            if not has_failed:
                 return web.json_response(response_data)
 
         failed_fc = self._find_failed_function_call(response_data, tools)
