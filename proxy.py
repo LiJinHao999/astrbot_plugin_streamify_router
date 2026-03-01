@@ -686,6 +686,8 @@ class GeminiHandler(ProviderHandler, GeminiFakeNonStream, GeminiFCEnhance):
                 return web.json_response(response_data)
 
         failed_fc = self._find_failed_function_call(response_data, tools)
+        if failed_fc is None and self._hint_tools:
+            failed_fc = self._find_hinted_empty_fc(response_data)
         function_name = failed_fc.get("name", "unknown") if failed_fc else "unknown"
         logger.warning(
             "Streamify: 工具 %s 参数在 %d 次重试后仍为空，放弃调用",
