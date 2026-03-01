@@ -1,16 +1,4 @@
 {
-  "pseudo_non_stream": {
-    "description": "是否启用假非流",
-    "type": "bool",
-    "default": true,
-    "hint": "开启后，将 AstrBot 发来的非流式请求强制改为流式发给上游，获取 SSE 响应后重组为非流式 JSON 返回，防止因无响应超时导致的连接断开"
-  },
-  "debug": {
-    "description": "启用调试日志",
-    "type": "bool",
-    "default": false,
-    "hint": "记录每个请求的方法、路径、目标、请求体和耗时"
-  },
   "port": {
     "description": "本地监听端口",
     "type": "int",
@@ -23,6 +11,12 @@
     "default": 120.0,
     "hint": "全局连接/读取超时，防止上游连接永久挂起"
   },
+    "pseudo_non_stream": {
+    "description": "是否启用假非流覆盖",
+    "type": "bool",
+    "default": true,
+    "hint": "开启后，将 AstrBot 发来的非流式请求强制改为流式发给上游，获取 SSE 响应后保持和上游的连接，重组为非流式 JSON 返回，防止因长时间无响应超时导致的连接断开"
+  },
   "tool_error_patterns": {
     "description": "额外的工具错误识别正则",
     "type": "list",
@@ -33,13 +27,19 @@
     "description": "最多重试次数",
     "type": "int",
     "default": 1,
-    "hint": "工具调用参数为空或提取失败时，注入提示(若启用了fc增强)并重试的最大次数；0 表示禁用；适用于所有提供商"
+    "hint": "工具调用参数为空或提取失败时，注入提示(启用了fc增强才注入)并重试的最大次数；0 表示禁用；适用于所有提供商"
   },
-  "extract_args": {
+    "extract_args": {
     "description": "启用 FC 增强（工具参数 JSON 提取）",
     "type": "bool",
     "default": false,
     "hint": "开启后，若工具调用参数为空，无效，或失败，会额外发送一条请求让模型单独输出 JSON 参数，再注入回原响应（适用于 Gemini/OpenAI/Claude）"
+  },
+    "debug": {
+    "description": "启用调试日志",
+    "type": "bool",
+    "default": false,
+    "hint": "记录每个请求的方法、路径、目标、请求体和耗时"
   },
   "providers": {
     "type": "template_list",

@@ -11,15 +11,15 @@ _EMPTY_ARGS_HINT = (
 )
 
 
+def _safe_int(value: Any, default: int = 0) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
 class OpenAIFakeNonStream:
     """OpenAI chat completions SSE→non-stream reassembly mixin."""
-
-    @staticmethod
-    def _safe_int(value: Any, default: int = 0) -> int:
-        try:
-            return int(value)
-        except (TypeError, ValueError):
-            return default
 
     @staticmethod
     def _new_choice_slot() -> Dict[str, Any]:
@@ -82,7 +82,7 @@ class OpenAIFakeNonStream:
             if not isinstance(tool_call, dict):
                 continue
 
-            tc_idx = self._safe_int(tool_call.get("index", fallback_idx), fallback_idx)
+            tc_idx = _safe_int(tool_call.get("index", fallback_idx), fallback_idx)
             tc_slot = slot["tool_calls"].setdefault(tc_idx, self._new_tool_slot())
             if isinstance(tool_call.get("id"), str):
                 tc_slot["id"] = tool_call["id"]
@@ -228,7 +228,7 @@ class OpenAIFakeNonStream:
                 usage = merged_usage
 
             for choice in chunk.get("choices", []):
-                idx = self._safe_int(choice.get("index", 0))
+                idx = _safe_int(choice.get("index", 0))
                 slot = choices.setdefault(idx, self._new_choice_slot())
                 self._update_choice_slot(slot, choice)
 
@@ -244,13 +244,6 @@ class OpenAIFakeNonStream:
 
 class ClaudeFakeNonStream:
     """Claude Messages API SSE→non-stream reassembly mixin."""
-
-    @staticmethod
-    def _safe_int(value: Any, default: int = 0) -> int:
-        try:
-            return int(value)
-        except (TypeError, ValueError):
-            return default
 
     @staticmethod
     def _init_state() -> Dict[str, Any]:
@@ -287,7 +280,7 @@ class ClaudeFakeNonStream:
     def _handle_content_block_start(
         self, state: Dict[str, Any], payload: Dict[str, Any]
     ) -> None:
-        idx = self._safe_int(payload.get("index", len(state["content_blocks"])))
+        idx = _safe_int(payload.get("index", len(state["content_blocks"])))
         block = payload.get("content_block") or {}
         if isinstance(block, dict):
             state["content_blocks"][idx] = dict(block)
@@ -295,7 +288,7 @@ class ClaudeFakeNonStream:
     def _handle_content_block_delta(
         self, state: Dict[str, Any], payload: Dict[str, Any]
     ) -> None:
-        idx = self._safe_int(payload.get("index", 0))
+        idx = _safe_int(payload.get("index", 0))
         block = state["content_blocks"].setdefault(idx, {"type": "text", "text": ""})
         delta = payload.get("delta") or {}
         delta_type = delta.get("type")

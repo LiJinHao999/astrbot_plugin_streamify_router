@@ -35,6 +35,41 @@ def _sanitize_for_log(obj: Any, _depth: int = 0) -> Any:
     return obj
 
 
+_FC_FAILURE_MSG = "工具调用失败，请如实告诉用户情况"
+
+
+def _inject_fc_failure_text_openai(result: Dict[str, Any], tool_name: str) -> None:
+    """向 OpenAI 格式响应注入工具调用失败提示。"""
+    hint = f"[{_FC_FAILURE_MSG}]"
+    for choice in result.get("choices", []):
+        msg = choice.get("message")
+        if isinstance(msg, dict):
+            msg["content"] = hint
+            msg.pop("tool_calls", None)
+            msg.pop("function_call", None)
+            choice["finish_reason"] = "stop"
+            return
+
+
+def _inject_fc_failure_text_claude(result: Dict[str, Any], tool_name: str) -> None:
+    """向 Claude 格式响应注入工具调用失败提示。"""
+    hint = f"[{_FC_FAILURE_MSG}]"
+    result["content"] = [{"type": "text", "text": hint}]
+    result["stop_reason"] = "end_turn"
+
+
+def _inject_fc_failure_text_gemini(result: Dict[str, Any], tool_name: str) -> None:
+    """向 Gemini 格式响应注入工具调用失败提示。"""
+    hint = f"[{_FC_FAILURE_MSG}]"
+    for candidate in result.get("candidates", []):
+        candidate["content"] = {
+            "role": "model",
+            "parts": [{"text": hint}],
+        }
+        candidate["finishReason"] = "STOP"
+        return
+
+
 class ProviderHandler:
     """Base handler for forwarding and stream utilities."""
 
@@ -385,7 +420,10 @@ class OpenAIChatHandler(ProviderHandler, OpenAIFakeNonStream, OpenAIFCEnhance):
                         )
                     return web.json_response(result)
 
-        return web.json_response(result)  # 重试仍失败，返回原始结果（不报 500）
+        # 重试仍失败，注入失败提示后返回
+        _fail_name = (failed_tc.get("function") or {}).get("name", "unknown") if failed_tc else "unknown"
+        _inject_fc_failure_text_openai(result, _fail_name)
+        return web.json_response(result)
 
 
 class ClaudeHandler(ProviderHandler, ClaudeFakeNonStream, ClaudeFCEnhance):
@@ -541,7 +579,10 @@ class ClaudeHandler(ProviderHandler, ClaudeFakeNonStream, ClaudeFCEnhance):
                         )
                     return web.json_response(result)
 
-        return web.json_response(result)  # 重试仍失败，返回原始结果（不报 500）
+        # 重试仍失败，注入失败提示后返回
+        _fail_name = failed_tc.get("name", "unknown") if failed_tc else "unknown"
+        _inject_fc_failure_text_claude(result, _fail_name)
+        return web.json_response(result)
 
 
 class GeminiHandler(ProviderHandler, GeminiFakeNonStream, GeminiFCEnhance):
@@ -761,22 +802,11 @@ class GeminiHandler(ProviderHandler, GeminiFakeNonStream, GeminiFCEnhance):
             failed_fc = self._find_hinted_empty_fc(response_data)
         function_name = failed_fc.get("name", "unknown") if failed_fc else "unknown"
         logger.warning(
-            "Streamify: 工具 %s 参数在 %d 次重试后仍为空，放弃调用",
+            "Streamify: 工具 %s 参数在 %d 次重试后仍为空，返回原始结果",
             function_name, self.fix_retries,
         )
-        return web.json_response(
-            {
-                "error": {
-                    "code": 500,
-                    "message": (
-                        f"Gemini 未能为工具 `{function_name}` 生成有效参数，"
-                        f"已重试 {self.fix_retries} 次仍失败。"
-                    ),
-                    "status": "FUNCTION_CALL_ARGS_EMPTY",
-                }
-            },
-            status=500,
-        )
+        _inject_fc_failure_text_gemini(response_data, function_name)
+        return web.json_response(response_data)
 
 
 class OpenAIResponsesHandler(ProviderHandler):
@@ -956,7 +986,6 @@ class StreamifyProxy:
         self.tool_error_patterns: Optional[List[str]] = tool_error_patterns
         self.providers: Dict[str, ProviderRoute] = {}
         self.session: Optional[ClientSession] = None
-        self._debug_log_path = pathlib.Path(__file__).parent / "debug_requests.log"
         self.app = web.Application(client_max_size=20 * 1024 * 1024)
         self.app.add_routes(
             [
@@ -1054,12 +1083,12 @@ class StreamifyProxy:
                 else:
                     qs = dict(req.query)
                     detail = json.dumps(qs, ensure_ascii=False) if qs else "<no query>"
-                ts = time.strftime("%Y-%m-%d %H:%M:%S")
-                with open(self._debug_log_path, "a", encoding="utf-8") as _f:
-                    _f.write(f"[{ts}] >>> {req.method.upper()} {path_text} -> {provider.target_url}\n")
-                    _f.write(detail + "\n\n")
+                logger.info(
+                    "Streamify >>> %s %s -> %s\n%s",
+                    req.method.upper(), path_text, provider.target_url, detail,
+                )
             except Exception as _exc:
-                logger.warning("Streamify debug: 写入请求日志失败: %s", _exc)
+                logger.warning("Streamify debug: 记录请求日志失败: %s", _exc)
 
         try:
             response = await provider.dispatch(req, sub_path)
@@ -1088,15 +1117,12 @@ class StreamifyProxy:
                             resp_detail = f"<{len(response.body)} bytes, {content_type}>"
                     else:
                         resp_detail = "<streaming response>"
-                    ts = time.strftime("%Y-%m-%d %H:%M:%S")
-                    with open(self._debug_log_path, "a", encoding="utf-8") as _f:
-                        _f.write(
-                            f"[{ts}] <<< {req.method.upper()} {path_text} "
-                            f"status={response.status} elapsed={elapsed_ms}ms\n"
-                        )
-                        _f.write(resp_detail + "\n\n")
+                    logger.info(
+                        "Streamify <<< %s %s status=%s elapsed=%dms\n%s",
+                        req.method.upper(), path_text, response.status, elapsed_ms, resp_detail,
+                    )
                 except Exception as _exc:
-                    logger.warning("Streamify debug: 写入响应日志失败: %s", _exc)
+                    logger.warning("Streamify debug: 记录响应日志失败: %s", _exc)
             return response
         except Exception as exc:
             logger.exception("Proxy dispatch failed for route %s: %s", route_name, exc)

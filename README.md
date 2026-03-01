@@ -1,16 +1,52 @@
 ﻿# astrbot_plugin_streamify_router
 
-## 注意:此项目为纯AIGC(gpt-5.3-codex)创建的插件，可能未经合适的性能检查或存在一些未知的问题，如果你有遇到类似的问题，可以使用此插件处理，或自行fork，但也请注意风险
+Astrbot 无感稳流网关（AstrBot 插件）。
 
-LLM 非流请求稳流网关（AstrBot 插件）。
+如果你有遇到以下问题:
 
-目前这是一个自用插件。
+1、gemini function calling(尤其是gemini3.0模型) / 其它模型 fuction calling 工具调用失败或参数空回
+'''
+Tool `astrbot_execute_shell` Result: error: Tool handler parameter mismatch,          
+  please check the handler definition. Handler parameters: command: str, background: bool = False, env: dict = {} 
+'''
 
-将非流请求转为流式请求，拼接响应后返回(假非流)，防止部分包装了cloudflare的中转因非流请求在2min内无响应，而超时自动关闭(429)，从而触发神秘的 'NoneType' object has no attribute 'get' 问题或 LLM 响应错误: All chat models failed: Exception: 请求失败, 返回的 candidates 为空的截断问题
+2、在使用插件的过程中，超过两分钟时自动超时、截断，上游返回429并超时……
+'''
+'NoneType' object has no attribute 'get'  或 LLM 响应错误: All chat models failed: Exception: 请求失败, 返回的 candidates 为空
 
-原本就是流式请求时直接透传 SSE。
+上游429超时，无法自动重试
+'''
 
-## 主要能力
+插件将在本地启动一个转发修复端口来解决这类出于模型问题/上游问题所产生的兼容性问题
+
+只需要你**填写需要转发的url，并更换astrbot provider的url为转发的url**
+
+通常是http://127.0.0.1:23456/yourendpoint (保存插件设置后，你应该填写的url示例会自动显示在设置项中)
+
+**如果还有什么难以处理的神秘问题，欢迎提issue讨论，作者看见会回复ovo**
+
+## 处理思路介绍
+
+### 无感修复 Function Calling 报错 & 提示词注入修复
+
+Layer1 : 预处理&记忆拦截
+由于插件属于网关层，网关层收到消息将会在astrbot之前，可以提前拦截，但网关无法自行判断工具调用是否是错误的
+
+因此，Layer1根据：tool中是否有必填的参数项没填(required)与插件缓存记忆中的tool是否会因为没填参数项报错来提前拦截&重试，扼杀出现错误的可能性。
+
+Layer2 : 根据astrbot响应中是否有报错响应来进行重试，关键词正则匹配(如不能.*为空、error:、(?i)missing \d+ required).可以在配置项中自行设置。
+
+提示词注入修复：发送一条含有用户消息、llm试图使用的工具、这个工具的介绍和参数介绍的消息(仅包含报错工具，最小化上下文处理)，然后解析这条简单消息的响应
+
+Layer3 : 如果重试、提示词调用都失败，注入一条工具调用失败的消息，遵从事实，防止模型产生莫名其妙的幻觉
+
+### 伪装非流
+
+网关接收到非流请求，但在内部将非流请求转为流式请求，拼接响应后返回(假非流)，即可防止部分包装了cloudflare的中转因非流请求在2min内无响应，而超时自动关闭(429)
+
+而原本就是流式请求时直接透传 SSE。
+
+### 特性支持
 
 - 多提供商路由：通过 `providers` 列表配置多个转发目标。
 - 路径分发：按 `/{route_name}/...` 区分不同目标。
@@ -19,33 +55,33 @@ LLM 非流请求稳流网关（AstrBot 插件）。
   - Claude Messages: `/v1/messages`
   - Gemini Generate Content: `:generateContent` / `:streamGenerateContent`
   - OpenAI Responses: `/v1/responses`
-- 每个路由可独立配置 `proxy_url`。
+- 每个路由可独立配置 `proxy_url`，是否开启假非流转发
 - 可选调试日志：开启后输出每次请求的处理状态与耗时。
-
-## 更健壮的处理
-
-- 流式解析改为按行处理 SSE，避免分块边界导致 UTF-8 多字节字符被截断后丢字。
-- 增加全局 `request_timeout` 超时控制，覆盖连接和读取阶段，防止上游长时间挂起导致协程堆积。
-- 对 `providers` 配置做统一类型归一化，配置异常时自动回退，减少运行期分支和空值问题。
-- OpenAI Chat 非流聚合增强工具调用兼容：同时支持 `delta.tool_calls`、`delta.function_call`、`choice.message.tool_calls`、`choice.message.function_call`，并兼容缺失 `index` 的分片聚合，降低工具调用中断概率。
-- Gemini 非流聚合保留完整 `content.parts`，支持文本与 `functionCall` 等非文本 part 合并，不再只拼接文本。
 
 ## 使用方式
 
 1. 安装并启用插件。
 2. 在插件配置中填写 `providers` , 设置转发端点
-3. 在 AstrBot provider 中 `base_url` 对应设为 `http://localhost:<端口，默认23456>/<路由名>`。
-
-## 配置项
-
-| 配置项 | 类型 | 默认值 | 说明 |
-|---|---|---|---|
-| `enabled` | bool | `true` | 是否启用代理 |
-| `debug` | bool | `false` | 是否输出调试日志（成功请求也会记录） |
-| `port` | int | `23456` | 本地监听端口 |
-| `request_timeout` | float | `120.0` | 上游请求全局超时（秒），用于连接/读取超时控制 |
-| `providers` | template_list | - | 多路由配置列表（`route_name`/`target_url`/`forward_url`/`proxy_url`） |
+3. 在 AstrBot provider 中 `base_url` 对应设为 `http://localhost:<端口>，默认23456>/<路由名>`。
 
 ## 指令
 
 - `/streamify`：查看代理运行状态和已注册路由。
+
+## 配置项
+
+| 配置项 | 说明 | 默认值 |
+|---|---|---|
+| `port` | 本地监听端口 | `23456` |
+| `request_timeout` | 上游请求超时（秒） | `120.0` |
+| `pseudo_non_stream` | 是否启用全局假非流覆盖 | `true` |
+| `tool_error_patterns` | 额外的工具错误识别正则列表 | `[]` |
+| `fix_retries` | 最多重试次数 | `1` |
+| `extract_args` | 启用 FC 增强（工具参数 JSON 提取） | `false` |
+| `debug` | 启用调试日志 | `false` |
+| `providers` | 提供商路由列表（`template_list`） | - |
+| `providers[].route_name` | 路由名称 | - |
+| `providers[].target_url` | 上游 API 基础 URL | `https://api.openai.com` |
+| `providers[].forward_url` | 生成的本地转发 URL（自动生成） | `""` |
+| `providers[].proxy_url` | HTTP 代理 URL（可选） | `""` |
+| `providers[].pseudo_non_stream` | 路由级别假非流覆盖 | `true` |
