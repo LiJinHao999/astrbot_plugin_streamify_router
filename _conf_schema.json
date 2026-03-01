@@ -18,10 +18,20 @@
     "hint": "开启后，将 AstrBot 发来的非流式请求强制改为流式发给上游，获取 SSE 响应后保持和上游的连接，重组为非流式 JSON 返回，防止因长时间无响应超时导致的连接断开"
   },
   "tool_error_patterns": {
-    "description": "额外的工具错误识别正则",
+    "description": "工具错误识别正则列表",
     "type": "list",
-    "default": [],
-    "hint": "自定义正则表达式列表，会追加到内置默认规则上（不会覆盖）；匹配任一即触发 Layer 2 修复"
+    "default": [
+      "(?i)^error:",
+      "(?i)parameter mismatch",
+      "(?i)missing \\d+ required",
+      "(?i)missing required positional argument",
+      "不能.*为空",
+      "缺少.*参数",
+      "(?i)cannot be empty",
+      "(?i)must not be empty",
+      "(?i)\\bempty\\b"
+    ],
+    "hint": "工具错误识别正则表达式列表，匹配任一即触发 Layer 2 修复；可自由增删改"
   },
   "fix_retries": {
     "description": "最多重试次数",

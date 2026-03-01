@@ -100,8 +100,7 @@ class ProviderHandler:
         self.pseudo_non_stream = bool(pseudo_non_stream)
         self.extract_args = bool(extract_args)
         self.fix_retries = max(0, int(fix_retries))
-        extra_patterns = tool_error_patterns if tool_error_patterns is not None else []
-        patterns = _DEFAULT_TOOL_ERROR_PATTERNS + [p for p in extra_patterns if p not in _DEFAULT_TOOL_ERROR_PATTERNS]
+        patterns = tool_error_patterns if tool_error_patterns is not None else _DEFAULT_TOOL_ERROR_PATTERNS
         self._error_patterns: List[Pattern[str]] = _compile_error_patterns(patterns)
         plugin_data_dir = _resolve_plugin_data_dir()
         plugin_data_dir.mkdir(parents=True, exist_ok=True)
