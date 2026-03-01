@@ -1,21 +1,40 @@
 import json
+import re
 import time
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Pattern, Tuple
 
 from .fake_non_stream import _EMPTY_ARGS_HINT
 
+# 默认工具错误识别正则列表（用户可在配置中覆盖）
+_DEFAULT_TOOL_ERROR_PATTERNS: List[str] = [
+    r"(?i)^error:",
+    r"(?i)parameter mismatch",
+    r"(?i)missing \d+ required",
+    r"(?i)missing required positional argument",
+    r"不能.*为空",
+    r"(?i)cannot be empty",
+    r"(?i)must not be empty",
+    r"(?i)\bempty\b",
+]
 
-def _is_tool_execution_error(content: str) -> bool:
+
+def _compile_error_patterns(patterns: List[str]) -> List[Pattern[str]]:
+    """编译正则列表，跳过无效规则并记录警告。"""
+    compiled: List[Pattern[str]] = []
+    for p in patterns:
+        try:
+            compiled.append(re.compile(p))
+        except re.error as exc:
+            # 避免在模块加载时引入 logger 循环依赖，使用 print 降级
+            print(f"[Streamify] 无效的工具错误正则表达式 {p!r}，已跳过: {exc}")
+    return compiled
+
+
+def _is_tool_execution_error(content: str, patterns: List[Pattern[str]]) -> bool:
     """判断工具执行结果是否为错误消息（三个 Mixin 共用）。"""
     if not content:
         return False
-    lower = content.lower()
-    return (
-        content.startswith("error:") or
-        "parameter mismatch" in lower or
-        "missing 1 required" in lower or
-        "missing required positional argument" in lower
-    )
+    return any(pat.search(content) for pat in patterns)
 
 
 class OpenAIFCEnhance:
@@ -55,8 +74,8 @@ class OpenAIFCEnhance:
                     return tc
         return None
 
-    @staticmethod
     def _find_tool_error_in_request(
+        self,
         body: Dict[str, Any],
     ) -> Optional[Tuple[str, str, int]]:
         """在请求消息历史中查找工具执行错误。
@@ -69,7 +88,7 @@ class OpenAIFCEnhance:
             if not isinstance(msg, dict) or msg.get("role") != "tool":
                 continue
             content = msg.get("content", "")
-            if not isinstance(content, str) or not _is_tool_execution_error(content):
+            if not isinstance(content, str) or not _is_tool_execution_error(content, self._error_patterns):  # type: ignore[attr-defined]
                 continue
             tool_call_id = msg.get("tool_call_id", "")
             for j in range(i - 1, -1, -1):
@@ -238,8 +257,8 @@ class ClaudeFCEnhance:
                     return block
         return None
 
-    @staticmethod
     def _find_tool_error_in_request(
+        self,
         body: Dict[str, Any],
     ) -> Optional[Tuple[str, str, int]]:
         """在请求消息历史中查找工具执行错误（Claude 格式）。
@@ -267,7 +286,7 @@ class ClaudeFCEnhance:
                     text = result_content
                 else:
                     text = ""
-                if not _is_tool_execution_error(text):
+                if not _is_tool_execution_error(text, self._error_patterns):  # type: ignore[attr-defined]
                     continue
                 tool_use_id = block.get("tool_use_id", "")
                 for j in range(i - 1, -1, -1):
@@ -436,8 +455,8 @@ class GeminiFCEnhance:
                         return fc
         return None
 
-    @staticmethod
     def _find_tool_error_in_request(
+        self,
         body: Dict[str, Any],
     ) -> Optional[Tuple[str, int]]:
         """在请求 contents 中查找工具执行错误（Gemini 格式）。
@@ -460,7 +479,7 @@ class GeminiFCEnhance:
                     continue
                 response = func_resp.get("response", {})
                 content = response.get("content", "")
-                if isinstance(content, str) and _is_tool_execution_error(content):
+                if isinstance(content, str) and _is_tool_execution_error(content, self._error_patterns):  # type: ignore[attr-defined]
                     return (func_resp.get("name", ""), i)
         return None
 

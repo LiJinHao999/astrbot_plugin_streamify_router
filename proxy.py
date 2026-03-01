@@ -2,7 +2,7 @@ import json
 import pathlib
 import re
 import time
-from typing import Any, AsyncIterator, Dict, List, Optional, Tuple
+from typing import Any, AsyncIterator, Dict, List, Optional, Pattern, Tuple
 
 import aiohttp
 from aiohttp import ClientResponse, ClientSession, web
@@ -10,7 +10,10 @@ from aiohttp import ClientResponse, ClientSession, web
 from astrbot.api import logger
 
 from .fake_non_stream import OpenAIFakeNonStream, ClaudeFakeNonStream, GeminiFakeNonStream
-from .fc_enhance import OpenAIFCEnhance, ClaudeFCEnhance, GeminiFCEnhance
+from .fc_enhance import (
+    OpenAIFCEnhance, ClaudeFCEnhance, GeminiFCEnhance,
+    _DEFAULT_TOOL_ERROR_PATTERNS, _compile_error_patterns,
+)
 
 # 匹配长 base64/base32 字符串（≥64 个字符）
 _LONG_BASE64_RE = re.compile(r'^[A-Za-z0-9+/\-_]{64,}={0,3}$')
@@ -45,6 +48,7 @@ class ProviderHandler:
         pseudo_non_stream: bool = True,
         extract_args: bool = False,
         fix_retries: int = 1,
+        tool_error_patterns: Optional[List[str]] = None,
     ):
         self.target = target_url.rstrip("/")
         self.proxy = proxy_url.strip() or None
@@ -54,6 +58,8 @@ class ProviderHandler:
         self.pseudo_non_stream = bool(pseudo_non_stream)
         self.extract_args = bool(extract_args)
         self.fix_retries = max(0, int(fix_retries))
+        patterns = tool_error_patterns if tool_error_patterns is not None else _DEFAULT_TOOL_ERROR_PATTERNS
+        self._error_patterns: List[Pattern[str]] = _compile_error_patterns(patterns)
 
     @staticmethod
     def _normalize_timeout(value: Any, default: float = 120.0) -> float:
@@ -713,6 +719,7 @@ class ProviderRoute:
         pseudo_non_stream: bool = True,
         extract_args: bool = False,
         fix_retries: int = 1,
+        tool_error_patterns: Optional[List[str]] = None,
     ):
         self.route_name = route_name
         self.target_url = target_url.rstrip("/")
@@ -735,6 +742,7 @@ class ProviderRoute:
                 pseudo_non_stream=pseudo_non_stream,
                 extract_args=extract_args,
                 fix_retries=fix_retries,
+                tool_error_patterns=tool_error_patterns,
             ),
             ClaudeHandler(
                 self.target_url,
@@ -745,6 +753,7 @@ class ProviderRoute:
                 pseudo_non_stream=pseudo_non_stream,
                 extract_args=extract_args,
                 fix_retries=fix_retries,
+                tool_error_patterns=tool_error_patterns,
             ),
             GeminiHandler(
                 self.target_url,
@@ -755,6 +764,7 @@ class ProviderRoute:
                 pseudo_non_stream=pseudo_non_stream,
                 extract_args=extract_args,
                 fix_retries=fix_retries,
+                tool_error_patterns=tool_error_patterns,
             ),
             OpenAIResponsesHandler(
                 self.target_url,
@@ -784,6 +794,7 @@ class StreamifyProxy:
         pseudo_non_stream: bool = True,
         extract_args: bool = False,
         fix_retries: int = 1,
+        tool_error_patterns: Optional[List[str]] = None,
     ):
         self.port = port
         self.providers_config = providers or []
@@ -792,6 +803,7 @@ class StreamifyProxy:
         self.pseudo_non_stream = bool(pseudo_non_stream)
         self.extract_args = bool(extract_args)
         self.fix_retries = max(0, int(fix_retries))
+        self.tool_error_patterns: Optional[List[str]] = tool_error_patterns
         self.providers: Dict[str, ProviderRoute] = {}
         self.session: Optional[ClientSession] = None
         self._debug_log_path = pathlib.Path(__file__).parent / "debug_requests.log"
@@ -829,6 +841,13 @@ class StreamifyProxy:
             if route_name in self.providers:
                 logger.warning("Duplicate route_name %s, overwrite previous target.", route_name)
 
+            # 路由级 pseudo_non_stream 优先；未配置则继承全局值
+            route_pseudo = item.get("pseudo_non_stream")
+            if isinstance(route_pseudo, bool):
+                pseudo_non_stream = route_pseudo
+            else:
+                pseudo_non_stream = self.pseudo_non_stream
+
             self.providers[route_name] = ProviderRoute(
                 route_name,
                 target_url,
@@ -836,9 +855,10 @@ class StreamifyProxy:
                 session=self.session,
                 debug=self.debug,
                 request_timeout=self.request_timeout,
-                pseudo_non_stream=self.pseudo_non_stream,
+                pseudo_non_stream=pseudo_non_stream,
                 extract_args=self.extract_args,
                 fix_retries=self.fix_retries,
+                tool_error_patterns=self.tool_error_patterns,
             )
 
     async def _dispatch(self, req: web.Request) -> web.Response:
