@@ -21,7 +21,7 @@ Tool `astrbot_execute_shell` Result: error: Tool handler parameter mismatch,
 上游429超时，无法自动重试
 ```
 
-插件将在本地启动一个转发修复端口来解决这类出于模型问题/上游问题所产生的兼容性问题
+插件将在本地启动一个转发修复端口(patch)来解决这类出于模型问题/上游问题所产生的兼容性问题
 
 只需要你**填写需要转发的url，并更换astrbot provider的url为转发的url**
 
