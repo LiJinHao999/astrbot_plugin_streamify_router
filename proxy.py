@@ -119,16 +119,16 @@ class ProviderHandler:
         except Exception:
             return None
 
-    async def _passthrough(self, req: web.Request, sub_path: str) -> web.Response:
+    async def _passthrough(self, req: web.Request, sub_path: str, _body: Optional[bytes] = None) -> web.Response:
         url = self._build_url(sub_path)
         headers = self._forward_headers(req)
-        body = await req.read()
+        data = _body if _body is not None else await req.read()
         async with self._request(
             req.method,
             url,
             headers=headers,
             params=req.query,
-            data=body,
+            data=data,
         ) as resp:
             resp_body = await resp.read()
             return web.Response(
@@ -221,6 +221,8 @@ class OpenAIChatHandler(ProviderHandler, OpenAIFakeNonStream, OpenAIFCEnhance):
         if body.get("stream"):
             return await self._proxy_stream(req, sub_path, body, headers)
 
+        clean_body = body
+
         # Layer 2 (Reactive): 检测传入请求中是否已有工具执行错误
         if self.extract_args:
             error_info = self._find_tool_error_in_request(body)
@@ -247,16 +249,21 @@ class OpenAIChatHandler(ProviderHandler, OpenAIFakeNonStream, OpenAIFCEnhance):
                         "Streamify [Layer2]: OpenAI 工具 %s 参数提取失败，继续正常转发",
                         tool_name,
                     )
+                # 无论提取是否成功，只要检测到错误就清理 body
+                clean_body = {**body, "messages": ctx_messages}
 
         # 假非流禁用时直通
         if not self.pseudo_non_stream:
+            if clean_body is not body:
+                return await self._passthrough(req, sub_path,
+                                               _body=json.dumps(clean_body).encode())
             return await self._passthrough(req, sub_path)
 
-        body["stream"] = True
+        clean_body["stream"] = True
         async with self._request(
             "POST",
             self._build_url(sub_path),
-            json=body,
+            json=clean_body,
             headers=headers,
             params=req.query,
         ) as resp:
@@ -266,16 +273,60 @@ class OpenAIChatHandler(ProviderHandler, OpenAIFakeNonStream, OpenAIFCEnhance):
                     headers=self._response_headers(resp),
                     text=await resp.text(),
                 )
-
             result = await self._build_non_stream_response(resp)
+
+        # 提前检查：无失败 FC 则直接返回
+        failed_tc = self._find_failed_function_call(result, clean_body.get("tools", []))
+        if failed_tc is None:
+            return web.json_response(result)
 
         # Layer 1 (Proactive): 对照 schema 检测响应中是否缺少必填参数
         if self.extract_args:
-            failed_tc = self._find_failed_function_call(result, body.get("tools", []))
-            if failed_tc is not None:
+            function_name = (failed_tc.get("function") or {}).get("name", "")
+            extracted = await self._extract_args_as_json(
+                clean_body, function_name, sub_path, headers
+            )
+            if extracted is not None:
+                self._patch_function_call_args(result, function_name, extracted)
+                if self.debug:
+                    logger.info(
+                        "Streamify [Layer1]: 成功提取 OpenAI 工具 %s 的参数: %s",
+                        function_name, extracted,
+                    )
+                return web.json_response(result)
+            elif self.debug:
+                logger.info("Streamify [Layer1]: OpenAI JSON 参数提取失败，尝试提示注入重试")
+
+        # 提示注入重试
+        for attempt in range(self.fix_retries):
+            if self.debug:
+                logger.info(
+                    "Streamify: 检测到空工具参数，注入提示后重试 (%d/%d)",
+                    attempt + 1, self.fix_retries,
+                )
+            current_body = self._inject_hint(clean_body)
+            current_body["stream"] = True
+            async with self._request(
+                "POST",
+                self._build_url(sub_path),
+                json=current_body,
+                headers=headers,
+                params=req.query,
+            ) as resp:
+                if resp.status != 200:
+                    return web.Response(
+                        status=resp.status,
+                        headers=self._response_headers(resp),
+                        text=await resp.text(),
+                    )
+                result = await self._build_non_stream_response(resp)
+            failed_tc = self._find_failed_function_call(result, clean_body.get("tools", []))
+            if failed_tc is None:
+                return web.json_response(result)
+            if self.extract_args:
                 function_name = (failed_tc.get("function") or {}).get("name", "")
                 extracted = await self._extract_args_as_json(
-                    body, function_name, sub_path, headers
+                    clean_body, function_name, sub_path, headers
                 )
                 if extracted is not None:
                     self._patch_function_call_args(result, function_name, extracted)
@@ -284,10 +335,9 @@ class OpenAIChatHandler(ProviderHandler, OpenAIFakeNonStream, OpenAIFCEnhance):
                             "Streamify [Layer1]: 成功提取 OpenAI 工具 %s 的参数: %s",
                             function_name, extracted,
                         )
-                elif self.debug:
-                    logger.info("Streamify [Layer1]: OpenAI JSON 参数提取失败，返回原始响应")
+                    return web.json_response(result)
 
-        return web.json_response(result)
+        return web.json_response(result)  # 重试仍失败，返回原始结果（不报 500）
 
 
 class ClaudeHandler(ProviderHandler, ClaudeFakeNonStream, ClaudeFCEnhance):
@@ -309,6 +359,8 @@ class ClaudeHandler(ProviderHandler, ClaudeFakeNonStream, ClaudeFCEnhance):
         # Stream requests always pass through directly
         if body.get("stream"):
             return await self._proxy_stream(req, sub_path, body, headers)
+
+        clean_body = body
 
         # Layer 2 (Reactive): 检测传入请求中是否已有工具执行错误
         if self.extract_args:
@@ -336,16 +388,21 @@ class ClaudeHandler(ProviderHandler, ClaudeFakeNonStream, ClaudeFCEnhance):
                         "Streamify [Layer2]: Claude 工具 %s 参数提取失败，继续正常转发",
                         tool_name,
                     )
+                # 无论提取是否成功，只要检测到错误就清理 body
+                clean_body = {**body, "messages": ctx_messages}
 
         # 假非流禁用时直通
         if not self.pseudo_non_stream:
+            if clean_body is not body:
+                return await self._passthrough(req, sub_path,
+                                               _body=json.dumps(clean_body).encode())
             return await self._passthrough(req, sub_path)
 
-        body["stream"] = True
+        clean_body["stream"] = True
         async with self._request(
             "POST",
             self._build_url(sub_path),
-            json=body,
+            json=clean_body,
             headers=headers,
             params=req.query,
         ) as resp:
@@ -355,28 +412,71 @@ class ClaudeHandler(ProviderHandler, ClaudeFakeNonStream, ClaudeFCEnhance):
                     headers=self._response_headers(resp),
                     text=await resp.text(),
                 )
+            result = await self._build_non_stream_response(resp)
 
-            response_data = await self._build_non_stream_response(resp)
+        # 提前检查：无失败 FC 则直接返回
+        failed_tc = self._find_failed_function_call(result, clean_body.get("tools", []))
+        if failed_tc is None:
+            return web.json_response(result)
 
         # Layer 1 (Proactive): 对照 schema 检测响应中是否缺少必填参数
         if self.extract_args:
-            failed_block = self._find_failed_function_call(response_data, body.get("tools", []))
-            if failed_block is not None:
-                function_name = failed_block.get("name", "")
+            function_name = failed_tc.get("name", "")
+            extracted = await self._extract_args_as_json(
+                clean_body, function_name, sub_path, headers
+            )
+            if extracted is not None:
+                self._patch_function_call_args(result, function_name, extracted)
+                if self.debug:
+                    logger.info(
+                        "Streamify [Layer1]: 成功提取 Claude 工具 %s 的参数: %s",
+                        function_name, extracted,
+                    )
+                return web.json_response(result)
+            elif self.debug:
+                logger.info("Streamify [Layer1]: Claude JSON 参数提取失败，尝试提示注入重试")
+
+        # 提示注入重试
+        for attempt in range(self.fix_retries):
+            if self.debug:
+                logger.info(
+                    "Streamify: 检测到空工具参数，注入提示后重试 (%d/%d)",
+                    attempt + 1, self.fix_retries,
+                )
+            current_body = self._inject_hint(clean_body)
+            current_body["stream"] = True
+            async with self._request(
+                "POST",
+                self._build_url(sub_path),
+                json=current_body,
+                headers=headers,
+                params=req.query,
+            ) as resp:
+                if resp.status != 200:
+                    return web.Response(
+                        status=resp.status,
+                        headers=self._response_headers(resp),
+                        text=await resp.text(),
+                    )
+                result = await self._build_non_stream_response(resp)
+            failed_tc = self._find_failed_function_call(result, clean_body.get("tools", []))
+            if failed_tc is None:
+                return web.json_response(result)
+            if self.extract_args:
+                function_name = failed_tc.get("name", "")
                 extracted = await self._extract_args_as_json(
-                    body, function_name, sub_path, headers
+                    clean_body, function_name, sub_path, headers
                 )
                 if extracted is not None:
-                    self._patch_function_call_args(response_data, function_name, extracted)
+                    self._patch_function_call_args(result, function_name, extracted)
                     if self.debug:
                         logger.info(
                             "Streamify [Layer1]: 成功提取 Claude 工具 %s 的参数: %s",
                             function_name, extracted,
                         )
-                elif self.debug:
-                    logger.info("Streamify [Layer1]: Claude JSON 参数提取失败，返回原始响应")
+                    return web.json_response(result)
 
-        return web.json_response(response_data)
+        return web.json_response(result)  # 重试仍失败，返回原始结果（不报 500）
 
 
 class GeminiHandler(ProviderHandler, GeminiFakeNonStream, GeminiFCEnhance):
@@ -400,6 +500,8 @@ class GeminiHandler(ProviderHandler, GeminiFakeNonStream, GeminiFCEnhance):
         headers = self._forward_headers(req)
         params = {k: v for k, v in req.query.items()}
         params["alt"] = "sse"
+
+        clean_body = body
 
         # Layer 2 (Reactive): 检测传入请求中是否已有工具执行错误
         if self.extract_args:
@@ -425,17 +527,22 @@ class GeminiHandler(ProviderHandler, GeminiFakeNonStream, GeminiFCEnhance):
                         "Streamify [Layer2]: Gemini 工具 %s 参数提取失败，继续正常转发",
                         tool_name,
                     )
+                # 无论提取是否成功，只要检测到错误就清理 body
+                clean_body = {**body, "contents": ctx_contents}
 
-        tools = body.get("tools", [])
+        tools = clean_body.get("tools", [])
 
         # 假非流禁用时直通
         if not self.pseudo_non_stream:
+            if clean_body is not body:
+                return await self._passthrough(req, sub_path,
+                                               _body=json.dumps(clean_body).encode())
             return await self._passthrough(req, sub_path)
 
         async with self._request(
             "POST",
             self._build_url(stream_path),
-            json=body,
+            json=clean_body,
             headers=headers,
             params=params,
         ) as resp:
@@ -455,7 +562,7 @@ class GeminiHandler(ProviderHandler, GeminiFakeNonStream, GeminiFCEnhance):
             failed_fc = self._find_failed_function_call(response_data, tools)
             if failed_fc is not None:
                 extracted = await self._extract_args_as_json(
-                    body, failed_fc.get("name", ""), stream_path, headers, params
+                    clean_body, failed_fc.get("name", ""), stream_path, headers, params
                 )
                 if extracted is not None:
                     self._patch_function_call_args(
@@ -476,7 +583,7 @@ class GeminiHandler(ProviderHandler, GeminiFakeNonStream, GeminiFCEnhance):
                     "Streamify: 检测到空工具参数，注入提示后重试 (%d/%d)",
                     attempt + 1, self.fix_retries,
                 )
-            current_body = self._inject_hint(body)
+            current_body = self._inject_hint(clean_body)
             async with self._request(
                 "POST",
                 self._build_url(stream_path),

@@ -2,6 +2,8 @@ import json
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
+from .fake_non_stream import _EMPTY_ARGS_HINT
+
 
 def _is_tool_execution_error(content: str) -> bool:
     """判断工具执行结果是否为错误消息（三个 Mixin 共用）。"""
@@ -190,6 +192,22 @@ class OpenAIFCEnhance:
         except Exception:
             return None
 
+    @staticmethod
+    def _inject_hint(body: Dict[str, Any]) -> Dict[str, Any]:
+        body = dict(body)
+        messages = list(body.get("messages", []))
+        for i, msg in enumerate(messages):
+            if isinstance(msg, dict) and msg.get("role") == "system":
+                existing = msg.get("content", "")
+                new_msg = dict(msg)
+                new_msg["content"] = f"{existing}\n\n{_EMPTY_ARGS_HINT}" if existing else _EMPTY_ARGS_HINT
+                messages[i] = new_msg
+                break
+        else:
+            messages.insert(0, {"role": "system", "content": _EMPTY_ARGS_HINT})
+        body["messages"] = messages
+        return body
+
 
 class ClaudeFCEnhance:
     """Claude FC enhancement mixin."""
@@ -362,6 +380,20 @@ class ClaudeFCEnhance:
         except Exception:
             return None
 
+    @staticmethod
+    def _inject_hint(body: Dict[str, Any]) -> Dict[str, Any]:
+        body = dict(body)
+        existing = body.get("system", "")
+        if isinstance(existing, str):
+            body["system"] = f"{existing}\n\n{_EMPTY_ARGS_HINT}" if existing else _EMPTY_ARGS_HINT
+        elif isinstance(existing, list):
+            new_system = list(existing)
+            new_system.append({"type": "text", "text": _EMPTY_ARGS_HINT})
+            body["system"] = new_system
+        else:
+            body["system"] = _EMPTY_ARGS_HINT
+        return body
+
 
 class GeminiFCEnhance:
     """Gemini FC enhancement mixin."""
@@ -533,3 +565,16 @@ class GeminiFCEnhance:
                 return result if isinstance(result, dict) else None
         except Exception:
             return None
+
+    @staticmethod
+    def _inject_hint(body: Dict[str, Any]) -> Dict[str, Any]:
+        body = dict(body)
+        hint_part = {"text": _EMPTY_ARGS_HINT}
+        sys_inst = body.get("systemInstruction")
+        if isinstance(sys_inst, dict):
+            parts = list(sys_inst.get("parts", []))
+            parts.append(hint_part)
+            body["systemInstruction"] = {**sys_inst, "parts": parts}
+        else:
+            body["systemInstruction"] = {"parts": [hint_part]}
+        return body

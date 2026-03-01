@@ -474,15 +474,3 @@ class GeminiFakeNonStream:
             response_data["modelVersion"] = state["model_version"]
         return response_data
 
-    @staticmethod
-    def _inject_hint(body: Dict[str, Any]) -> Dict[str, Any]:
-        body = dict(body)
-        hint_part = {"text": _EMPTY_ARGS_HINT}
-        sys_inst = body.get("systemInstruction")
-        if isinstance(sys_inst, dict):
-            parts = list(sys_inst.get("parts", []))
-            parts.append(hint_part)
-            body["systemInstruction"] = {**sys_inst, "parts": parts}
-        else:
-            body["systemInstruction"] = {"parts": [hint_part]}
-        return body
