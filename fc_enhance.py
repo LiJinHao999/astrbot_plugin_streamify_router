@@ -51,6 +51,14 @@ class OpenAIFCEnhance:
         return False
 
     @staticmethod
+    def _extract_tool_schema(tools: List[Dict[str, Any]], tool_name: str) -> Optional[Dict[str, Any]]:
+        for tool in tools:
+            fn = tool.get("function") or {}
+            if fn.get("name") == tool_name:
+                return fn.get("parameters")
+        return None
+
+    @staticmethod
     def _find_failed_function_call(
         response_data: Dict[str, Any],
         tools: Optional[List[Dict[str, Any]]] = None,
@@ -218,18 +226,28 @@ class OpenAIFCEnhance:
             return None
 
     @staticmethod
-    def _inject_hint(body: Dict[str, Any]) -> Dict[str, Any]:
+    def _inject_hint(body: Dict[str, Any], tool_name: str = "") -> Dict[str, Any]:
         body = dict(body)
+        hint = _EMPTY_ARGS_HINT
+        if tool_name:
+            schema = OpenAIFCEnhance._extract_tool_schema(body.get("tools", []), tool_name)
+            if schema:
+                hint = (
+                    f"{hint}\n\nThe tool `{tool_name}` MUST be called with these parameters:\n"
+                    f"{json.dumps(schema, ensure_ascii=False, indent=2)}"
+                )
+            else:
+                hint = f"{hint}\n\nSpecifically, the tool `{tool_name}` requires non-empty arguments."
         messages = list(body.get("messages", []))
         for i, msg in enumerate(messages):
             if isinstance(msg, dict) and msg.get("role") == "system":
                 existing = msg.get("content", "")
                 new_msg = dict(msg)
-                new_msg["content"] = f"{existing}\n\n{_EMPTY_ARGS_HINT}" if existing else _EMPTY_ARGS_HINT
+                new_msg["content"] = f"{existing}\n\n{hint}" if existing else hint
                 messages[i] = new_msg
                 break
         else:
-            messages.insert(0, {"role": "system", "content": _EMPTY_ARGS_HINT})
+            messages.insert(0, {"role": "system", "content": hint})
         body["messages"] = messages
         return body
 
@@ -247,6 +265,13 @@ class ClaudeFCEnhance:
                 required = (tool.get("input_schema") or {}).get("required", [])
                 return bool(required)
         return False
+
+    @staticmethod
+    def _extract_tool_schema(tools: List[Dict[str, Any]], tool_name: str) -> Optional[Dict[str, Any]]:
+        for tool in tools:
+            if isinstance(tool, dict) and tool.get("name") == tool_name:
+                return tool.get("input_schema")
+        return None
 
     @staticmethod
     def _find_failed_function_call(
@@ -412,17 +437,27 @@ class ClaudeFCEnhance:
             return None
 
     @staticmethod
-    def _inject_hint(body: Dict[str, Any]) -> Dict[str, Any]:
+    def _inject_hint(body: Dict[str, Any], tool_name: str = "") -> Dict[str, Any]:
         body = dict(body)
+        hint = _EMPTY_ARGS_HINT
+        if tool_name:
+            schema = ClaudeFCEnhance._extract_tool_schema(body.get("tools", []), tool_name)
+            if schema:
+                hint = (
+                    f"{hint}\n\nThe tool `{tool_name}` MUST be called with these parameters:\n"
+                    f"{json.dumps(schema, ensure_ascii=False, indent=2)}"
+                )
+            else:
+                hint = f"{hint}\n\nSpecifically, the tool `{tool_name}` requires non-empty arguments."
         existing = body.get("system", "")
         if isinstance(existing, str):
-            body["system"] = f"{existing}\n\n{_EMPTY_ARGS_HINT}" if existing else _EMPTY_ARGS_HINT
+            body["system"] = f"{existing}\n\n{hint}" if existing else hint
         elif isinstance(existing, list):
             new_system = list(existing)
-            new_system.append({"type": "text", "text": _EMPTY_ARGS_HINT})
+            new_system.append({"type": "text", "text": hint})
             body["system"] = new_system
         else:
-            body["system"] = _EMPTY_ARGS_HINT
+            body["system"] = hint
         return body
 
 
@@ -438,6 +473,14 @@ class GeminiFCEnhance:
                     required = (fd.get("parameters") or {}).get("required", [])
                     return bool(required)
         return False
+
+    @staticmethod
+    def _extract_tool_schema(tools: List[Dict[str, Any]], tool_name: str) -> Optional[Dict[str, Any]]:
+        for tool in tools:
+            for fd in tool.get("functionDeclarations", []):
+                if fd.get("name") == tool_name:
+                    return fd.get("parameters")
+        return None
 
     @staticmethod
     def _has_failed_function_call(
@@ -604,9 +647,19 @@ class GeminiFCEnhance:
             return None
 
     @staticmethod
-    def _inject_hint(body: Dict[str, Any]) -> Dict[str, Any]:
+    def _inject_hint(body: Dict[str, Any], tool_name: str = "") -> Dict[str, Any]:
         body = dict(body)
-        hint_part = {"text": _EMPTY_ARGS_HINT}
+        hint = _EMPTY_ARGS_HINT
+        if tool_name:
+            schema = GeminiFCEnhance._extract_tool_schema(body.get("tools", []), tool_name)
+            if schema:
+                hint = (
+                    f"{hint}\n\nThe tool `{tool_name}` MUST be called with these parameters:\n"
+                    f"{json.dumps(schema, ensure_ascii=False, indent=2)}"
+                )
+            else:
+                hint = f"{hint}\n\nSpecifically, the tool `{tool_name}` requires non-empty arguments."
+        hint_part = {"text": hint}
         sys_inst = body.get("systemInstruction")
         if isinstance(sys_inst, dict):
             parts = list(sys_inst.get("parts", []))

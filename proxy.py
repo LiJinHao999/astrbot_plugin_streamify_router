@@ -342,13 +342,14 @@ class OpenAIChatHandler(ProviderHandler, OpenAIFakeNonStream, OpenAIFCEnhance):
                 logger.info("Streamify [Layer1]: OpenAI JSON 参数提取失败，尝试提示注入重试")
 
         # 提示注入重试
+        retry_tool_name = (failed_tc.get("function") or {}).get("name", "") if failed_tc else ""
         for attempt in range(self.fix_retries):
             if self.debug:
                 logger.info(
                     "Streamify: 检测到空工具参数，注入提示后重试 (%d/%d)",
                     attempt + 1, self.fix_retries,
                 )
-            current_body = self._inject_hint(clean_body)
+            current_body = self._inject_hint(clean_body, retry_tool_name)
             current_body["stream"] = True
             async with self._request(
                 "POST",
@@ -497,13 +498,14 @@ class ClaudeHandler(ProviderHandler, ClaudeFakeNonStream, ClaudeFCEnhance):
                 logger.info("Streamify [Layer1]: Claude JSON 参数提取失败，尝试提示注入重试")
 
         # 提示注入重试
+        retry_tool_name = failed_tc.get("name", "") if failed_tc else ""
         for attempt in range(self.fix_retries):
             if self.debug:
                 logger.info(
                     "Streamify: 检测到空工具参数，注入提示后重试 (%d/%d)",
                     attempt + 1, self.fix_retries,
                 )
-            current_body = self._inject_hint(clean_body)
+            current_body = self._inject_hint(clean_body, retry_tool_name)
             current_body["stream"] = True
             async with self._request(
                 "POST",
@@ -657,13 +659,17 @@ class GeminiHandler(ProviderHandler, GeminiFakeNonStream, GeminiFCEnhance):
                 elif self.debug:
                     logger.info("Streamify [Layer1]: Gemini JSON 参数提取失败，尝试提示注入重试")
 
+        retry_fc = self._find_failed_function_call(response_data, tools)
+        if retry_fc is None and self._hint_tools:
+            retry_fc = self._find_hinted_empty_fc(response_data)
+        retry_tool_name = retry_fc.get("name", "") if retry_fc else ""
         for attempt in range(self.fix_retries):
             if self.debug:
                 logger.info(
                     "Streamify: 检测到空工具参数，注入提示后重试 (%d/%d)",
                     attempt + 1, self.fix_retries,
                 )
-            current_body = self._inject_hint(clean_body)
+            current_body = self._inject_hint(clean_body, retry_tool_name)
             async with self._request(
                 "POST",
                 self._build_url(stream_path),
