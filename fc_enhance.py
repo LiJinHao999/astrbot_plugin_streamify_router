@@ -233,11 +233,12 @@ class OpenAIFCEnhance:
             schema = OpenAIFCEnhance._extract_tool_schema(body.get("tools", []), tool_name)
             if schema:
                 hint = (
-                    f"{hint}\n\nThe tool `{tool_name}` MUST be called with these parameters:\n"
+                    f"{hint}\n\n工具 `{tool_name}` 必须使用以下参数调用：\n"
                     f"{json.dumps(schema, ensure_ascii=False, indent=2)}"
                 )
             else:
-                hint = f"{hint}\n\nSpecifically, the tool `{tool_name}` requires non-empty arguments."
+                hint = f"{hint}\n\n特别注意：工具 `{tool_name}` 的参数不能为空。"
+        # 1) system 消息注入
         messages = list(body.get("messages", []))
         for i, msg in enumerate(messages):
             if isinstance(msg, dict) and msg.get("role") == "system":
@@ -248,6 +249,12 @@ class OpenAIFCEnhance:
                 break
         else:
             messages.insert(0, {"role": "system", "content": hint})
+        # 2) messages 末尾追加 user 消息，强化引导
+        if tool_name:
+            messages.append({
+                "role": "user",
+                "content": f"请立即调用工具 `{tool_name}`，并填写所有必填参数，不要留空。",
+            })
         body["messages"] = messages
         return body
 
@@ -444,11 +451,12 @@ class ClaudeFCEnhance:
             schema = ClaudeFCEnhance._extract_tool_schema(body.get("tools", []), tool_name)
             if schema:
                 hint = (
-                    f"{hint}\n\nThe tool `{tool_name}` MUST be called with these parameters:\n"
+                    f"{hint}\n\n工具 `{tool_name}` 必须使用以下参数调用：\n"
                     f"{json.dumps(schema, ensure_ascii=False, indent=2)}"
                 )
             else:
-                hint = f"{hint}\n\nSpecifically, the tool `{tool_name}` requires non-empty arguments."
+                hint = f"{hint}\n\n特别注意：工具 `{tool_name}` 的参数不能为空。"
+        # 1) system 注入
         existing = body.get("system", "")
         if isinstance(existing, str):
             body["system"] = f"{existing}\n\n{hint}" if existing else hint
@@ -458,6 +466,14 @@ class ClaudeFCEnhance:
             body["system"] = new_system
         else:
             body["system"] = hint
+        # 2) messages 末尾追加 user 消息，强化引导
+        if tool_name:
+            messages = list(body.get("messages", []))
+            messages.append({
+                "role": "user",
+                "content": f"请立即调用工具 `{tool_name}`，并填写所有必填参数，不要留空。",
+            })
+            body["messages"] = messages
         return body
 
 
@@ -654,11 +670,12 @@ class GeminiFCEnhance:
             schema = GeminiFCEnhance._extract_tool_schema(body.get("tools", []), tool_name)
             if schema:
                 hint = (
-                    f"{hint}\n\nThe tool `{tool_name}` MUST be called with these parameters:\n"
+                    f"{hint}\n\n工具 `{tool_name}` 必须使用以下参数调用：\n"
                     f"{json.dumps(schema, ensure_ascii=False, indent=2)}"
                 )
             else:
-                hint = f"{hint}\n\nSpecifically, the tool `{tool_name}` requires non-empty arguments."
+                hint = f"{hint}\n\n特别注意：工具 `{tool_name}` 的参数不能为空。"
+        # 1) systemInstruction 注入
         hint_part = {"text": hint}
         sys_inst = body.get("systemInstruction")
         if isinstance(sys_inst, dict):
@@ -667,4 +684,12 @@ class GeminiFCEnhance:
             body["systemInstruction"] = {**sys_inst, "parts": parts}
         else:
             body["systemInstruction"] = {"parts": [hint_part]}
+        # 2) contents 末尾追加 user 消息，强化引导
+        if tool_name:
+            user_hint = (
+                f"请立即调用工具 `{tool_name}`，并填写所有必填参数，不要留空。"
+            )
+            contents = list(body.get("contents", []))
+            contents.append({"role": "user", "parts": [{"text": user_hint}]})
+            body["contents"] = contents
         return body

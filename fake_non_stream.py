@@ -6,9 +6,8 @@ from aiohttp import ClientResponse
 
 # 注入到请求的提示，引导模型正确填写工具参数
 _EMPTY_ARGS_HINT = (
-    "IMPORTANT: When calling a tool/function, you MUST provide valid JSON for ALL "
-    "required arguments. Never invoke a tool with an empty argument object {} if the "
-    "tool has required parameters. Fill every required field before calling the tool."
+    "重要：调用工具/函数时，必须为所有必填参数提供有效的 JSON 值。"
+    "如果工具有必填参数，绝对不要用空对象 {} 调用。调用前请填写每一个必填字段。"
 )
 
 

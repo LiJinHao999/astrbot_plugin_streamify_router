@@ -601,8 +601,8 @@ class GeminiHandler(ProviderHandler, GeminiFakeNonStream, GeminiFCEnhance):
                     # 不返回合成响应（缺 thoughtSignature 会导致后续请求 400），
                     # 而是把提取到的参数注入上下文，让模型自己生成带签名的 function call
                     args_hint = (
-                        f"IMPORTANT: You MUST call the tool `{tool_name}` with exactly "
-                        f"these arguments:\n{json.dumps(extracted, ensure_ascii=False)}"
+                        f"重要：你必须使用以下参数调用工具 `{tool_name}`：\n"
+                        f"{json.dumps(extracted, ensure_ascii=False)}"
                     )
                     clean_body = {**body, "contents": ctx_contents}
                     sys_inst = clean_body.get("systemInstruction")
