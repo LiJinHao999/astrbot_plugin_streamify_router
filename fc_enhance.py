@@ -12,6 +12,7 @@ _DEFAULT_TOOL_ERROR_PATTERNS: List[str] = [
     r"(?i)missing \d+ required",
     r"(?i)missing required positional argument",
     r"不能.*为空",
+    r"缺少.*参数",
     r"(?i)cannot be empty",
     r"(?i)must not be empty",
     r"(?i)\bempty\b",

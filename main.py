@@ -118,6 +118,9 @@ class StreamifyPlugin(Star):
         self._sync_provider_forward_urls(port)
         providers = self._resolve_providers()
 
+        raw_patterns = self.config.get("tool_error_patterns", None)
+        tool_error_patterns = raw_patterns if isinstance(raw_patterns, list) else None
+
         self.proxy = StreamifyProxy(
             port=port,
             providers=providers,
@@ -126,6 +129,7 @@ class StreamifyPlugin(Star):
             pseudo_non_stream=pseudo_non_stream,
             extract_args=extract_args,
             fix_retries=fix_retries,
+            tool_error_patterns=tool_error_patterns,
         )
         await self.proxy.start()
 

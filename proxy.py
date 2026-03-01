@@ -58,7 +58,8 @@ class ProviderHandler:
         self.pseudo_non_stream = bool(pseudo_non_stream)
         self.extract_args = bool(extract_args)
         self.fix_retries = max(0, int(fix_retries))
-        patterns = tool_error_patterns if tool_error_patterns is not None else _DEFAULT_TOOL_ERROR_PATTERNS
+        extra_patterns = tool_error_patterns if tool_error_patterns is not None else []
+        patterns = _DEFAULT_TOOL_ERROR_PATTERNS + [p for p in extra_patterns if p not in _DEFAULT_TOOL_ERROR_PATTERNS]
         self._error_patterns: List[Pattern[str]] = _compile_error_patterns(patterns)
         self._hint_tools_path = (
             pathlib.Path(__file__).parent
