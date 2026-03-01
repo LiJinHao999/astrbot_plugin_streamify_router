@@ -23,11 +23,13 @@ def _compile_error_patterns(patterns: List[str]) -> List[Pattern[str]]:
     """编译正则列表，跳过无效规则并记录警告。"""
     compiled: List[Pattern[str]] = []
     for p in patterns:
+        if not isinstance(p, str):
+            logger.warning("[Streamify] 工具错误正则不是字符串，已跳过: %r", p)
+            continue
         try:
             compiled.append(re.compile(p))
         except re.error as exc:
-            # 避免在模块加载时引入 logger 循环依赖，使用 print 降级
-            logger.warning(f"[Streamify] 无效的工具错误正则表达式 {p!r}，已跳过: {exc}")
+            logger.warning("[Streamify] 无效的工具错误正则表达式 %r，已跳过: %s", p, exc)
     return compiled
 
 

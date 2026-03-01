@@ -40,13 +40,24 @@ class StreamifyPlugin(Star):
                 ]
         return providers
 
-    def _is_debug_enabled(self) -> bool:
-        value = self.config.get("debug", False)
+    @staticmethod
+    def _parse_bool(value: Any, default: bool) -> bool:
         if isinstance(value, bool):
             return value
+        if isinstance(value, (int, float)):
+            return value != 0
         if isinstance(value, str):
-            return value.strip().lower() in {"1", "true", "yes", "on"}
-        return bool(value)
+            normalized = value.strip().lower()
+            if normalized in {"1", "true", "yes", "on"}:
+                return True
+            if normalized in {"0", "false", "no", "off", ""}:
+                return False
+            return default
+        return default
+
+    def _is_debug_enabled(self) -> bool:
+        value = self.config.get("debug", False)
+        return self._parse_bool(value, False)
 
     def _resolve_request_timeout(self) -> float:
         default_timeout = 120.0
@@ -67,6 +78,40 @@ class StreamifyPlugin(Star):
             )
             return default_timeout
         return timeout
+
+    def _resolve_fix_retries(self) -> int:
+        default_retries = 1
+        value = self.config.get(
+            "fix_retries", self.config.get("gemini_fix_retries", default_retries)
+        )
+        try:
+            retries = int(value)
+        except (TypeError, ValueError):
+            logger.warning(
+                "Invalid fix_retries=%r, fallback to %d.", value, default_retries
+            )
+            return default_retries
+        if retries < 0:
+            logger.warning(
+                "Negative fix_retries=%r, fallback to %d.", value, default_retries
+            )
+            return default_retries
+        return retries
+
+    def _resolve_port(self) -> int:
+        default_port = 23456
+        value = self.config.get("port", default_port)
+        try:
+            port = int(value)
+        except (TypeError, ValueError):
+            logger.warning("Invalid port=%r, fallback to %d.", value, default_port)
+            return default_port
+        if port <= 0 or port > 65535:
+            logger.warning(
+                "Out-of-range port=%r, fallback to %d.", value, default_port
+            )
+            return default_port
+        return port
 
     @staticmethod
     def _build_local_route_base(port: int, route_name: str) -> str:
@@ -98,21 +143,21 @@ class StreamifyPlugin(Star):
 
     async def initialize(self):
         # 向后兼容读取配置项
-        pseudo_non_stream = bool(
-            self.config.get("pseudo_non_stream", self.config.get("enabled", True))
+        pseudo_non_stream = self._parse_bool(
+            self.config.get("pseudo_non_stream", self.config.get("enabled", True)),
+            True,
         )
-        fix_retries = int(
-            self.config.get("fix_retries", self.config.get("gemini_fix_retries", 1))
-        )
-        extract_args = bool(
-            self.config.get("extract_args", self.config.get("gemini_extract_args", False))
+        fix_retries = self._resolve_fix_retries()
+        extract_args = self._parse_bool(
+            self.config.get("extract_args", self.config.get("gemini_extract_args", False)),
+            False,
         )
 
         if not pseudo_non_stream and not extract_args:
             logger.info("Streamify: 假非流与 FC 增强均已禁用，代理不启动")
             return
 
-        port = self.config.get("port", 23456)
+        port = self._resolve_port()
         debug = self._is_debug_enabled()
         request_timeout = self._resolve_request_timeout()
         self._sync_provider_forward_urls(port)
@@ -140,7 +185,7 @@ class StreamifyPlugin(Star):
             yield event.plain_result("稳流代理未运行")
             return
 
-        port = self.config.get("port", 23456)
+        port = self._resolve_port()
         routes = self.proxy.get_route_infos()
 
         if not routes:

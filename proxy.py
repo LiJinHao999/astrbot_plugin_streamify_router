@@ -8,7 +8,7 @@ import aiohttp
 from aiohttp import ClientResponse, ClientSession, web
 
 from astrbot.api import logger
-from astrbot.api.star import StarTools
+from astrbot.core.utils.astrbot_path import get_astrbot_data_path
 
 from .fake_non_stream import OpenAIFakeNonStream, ClaudeFakeNonStream, GeminiFakeNonStream
 from .fc_enhance import (
@@ -18,6 +18,12 @@ from .fc_enhance import (
 
 # 匹配长 base64/base32 字符串（≥64 个字符）
 _LONG_BASE64_RE = re.compile(r'^[A-Za-z0-9+/\-_]{64,}={0,3}$')
+
+_PLUGIN_NAME = "astrbot_plugin_streamify_router"
+
+
+def _resolve_plugin_data_dir() -> pathlib.Path:
+    return pathlib.Path(get_astrbot_data_path()) / "plugin_data" / _PLUGIN_NAME
 
 
 def _sanitize_for_log(obj: Any, _depth: int = 0) -> Any:
@@ -97,7 +103,7 @@ class ProviderHandler:
         extra_patterns = tool_error_patterns if tool_error_patterns is not None else []
         patterns = _DEFAULT_TOOL_ERROR_PATTERNS + [p for p in extra_patterns if p not in _DEFAULT_TOOL_ERROR_PATTERNS]
         self._error_patterns: List[Pattern[str]] = _compile_error_patterns(patterns)
-        plugin_data_dir = pathlib.Path(StarTools.get_data_dir())
+        plugin_data_dir = _resolve_plugin_data_dir()
         plugin_data_dir.mkdir(parents=True, exist_ok=True)
         self._hint_tools_path = plugin_data_dir / f"hint_tools_{self.__class__.__name__.lower()}.json"
         try:

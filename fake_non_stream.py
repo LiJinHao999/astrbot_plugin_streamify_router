@@ -222,12 +222,19 @@ class OpenAIFakeNonStream:
                 chunk = json.loads(data)
             except json.JSONDecodeError:
                 continue
+            if not isinstance(chunk, dict):
+                continue
 
             merged_usage = self._merge_chunk_meta(result, chunk)
             if merged_usage is not None:
                 usage = merged_usage
 
-            for choice in chunk.get("choices", []):
+            raw_choices = chunk.get("choices", [])
+            if not isinstance(raw_choices, list):
+                continue
+            for choice in raw_choices:
+                if not isinstance(choice, dict):
+                    continue
                 idx = _safe_int(choice.get("index", 0))
                 slot = choices.setdefault(idx, self._new_choice_slot())
                 self._update_choice_slot(slot, choice)
@@ -465,4 +472,3 @@ class GeminiFakeNonStream:
         if state["model_version"] is not None:
             response_data["modelVersion"] = state["model_version"]
         return response_data
-
