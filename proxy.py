@@ -575,6 +575,22 @@ class GeminiHandler(ProviderHandler, GeminiFakeNonStream, GeminiFCEnhance):
         if body is None:
             return await self._passthrough(req, sub_path)
 
+        # 临时调试：打印 contents 中的图片 part 结构（不打印实际数据）
+        if body and self.debug:
+            for i, c in enumerate(body.get("contents", [])):
+                for j, p in enumerate(c.get("parts", [])):
+                    if "inlineData" in p:
+                        d = p["inlineData"]
+                        logger.info(
+                            "Streamify image debug: contents[%d].parts[%d] mimeType=%s dataLen=%d",
+                            i, j, d.get("mimeType", "?"), len(d.get("data", "")),
+                        )
+                    elif "fileData" in p:
+                        logger.info(
+                            "Streamify image debug: contents[%d].parts[%d] fileData=%s",
+                            i, j, p["fileData"],
+                        )
+
         stream_path = path.replace(":generateContent", ":streamGenerateContent", 1)
         headers = self._forward_headers(req)
         params = {k: v for k, v in req.query.items()}
