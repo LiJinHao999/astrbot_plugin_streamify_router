@@ -1,6 +1,6 @@
 name: astrbot_plugin_streamify_router
 display_name: Astrbot 无感稳流网关
-desc: Astrbot 非侵入式 LLM 稳流网关(使用aiohttp)，提升 LLM 稳定性与使用体验，提供工具调用强化与假非流支持，无感强化工具调用体验，静默重试&修复function calling请求体(尤其是gemini 工具调用空回问题)，无感解决非流式请求超时截断问题(429)，未来还可能提供更多功能支持
-version: 0.1.0
+desc: Astrbot 非侵入式 LLM 稳流网关(使用aiohttp)，提升 LLM 稳定性与使用体验，提供工具调用强化与假非流转发支持，无感强化工具调用体验，静默重试&修复function calling请求体(尤其是gemini 工具调用空回问题)，无感解决非流式请求超时截断问题(429)，如果你在使用LLM(目前尤其是gemini)的过程中频繁遇到这类报错，可以尝试一下这个插件
+version: 1.0.0
 author: LiJinHao999
 repo: https://github.com/LiJinHao999/astrbot_plugin_streamify_router

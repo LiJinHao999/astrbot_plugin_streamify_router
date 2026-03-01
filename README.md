@@ -1,4 +1,4 @@
-﻿# astrbot_plugin_streamify_router
+# astrbot_plugin_streamify_router
 
 Astrbot 无感稳流网关（AstrBot 插件）。
 
@@ -49,7 +49,7 @@ Tool `astrbot_execute_shell` Result: error: Tool handler parameter mismatch,
 
 网关接收到非流请求，但在内部将非流请求转为流式请求，拼接响应后返回(假非流)，即可防止部分包装了cloudflare的中转因非流请求在2min内无响应，而超时自动关闭(429)
 
-而原本就是流式请求时直接透传 SSE。
+原本就是流式请求时,透传 SSE 流
 
 ### 特性支持
 
@@ -81,8 +81,8 @@ Tool `astrbot_execute_shell` Result: error: Tool handler parameter mismatch,
 | `request_timeout` | 上游请求超时（秒） | `120.0` |
 | `pseudo_non_stream` | 是否启用全局假非流覆盖 | `true` |
 | `tool_error_patterns` | 额外的工具错误识别正则列表 | `[]` |
-| `fix_retries` | 最多重试次数 | `1` |
-| `extract_args` | 启用 FC 增强（工具参数 JSON 提取） | `false` |
+| `fix_retries` | 最多重试次数 | `3` |
+| `extract_args` | 启用 FC 增强（工具参数 JSON 提取） | `true` |
 | `debug` | 启用调试日志 | `false` |
 | `providers` | 提供商路由列表（`template_list`） | - |
 | `providers[].route_name` | 路由名称 | - |

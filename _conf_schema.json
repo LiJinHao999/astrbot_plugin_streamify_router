@@ -26,13 +26,13 @@
   "fix_retries": {
     "description": "最多重试次数",
     "type": "int",
-    "default": 1,
+    "default": 3,
     "hint": "工具调用参数为空或提取失败时，注入提示(启用了fc增强才注入)并重试的最大次数；0 表示禁用；适用于所有提供商"
   },
     "extract_args": {
     "description": "启用 FC 增强（工具参数 JSON 提取）",
     "type": "bool",
-    "default": false,
+    "default": true,
     "hint": "开启后，若工具调用参数为空，无效，或失败，会额外发送一条请求让模型单独输出 JSON 参数，再注入回原响应（适用于 Gemini/OpenAI/Claude）"
   },
     "debug": {

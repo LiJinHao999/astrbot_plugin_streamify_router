@@ -1,4 +1,4 @@
-﻿from typing import Any, List
+from typing import Any, List
 
 from astrbot.api import AstrBotConfig, logger
 from astrbot.api.event import AstrMessageEvent, filter
@@ -10,8 +10,8 @@ from .proxy import StreamifyProxy
 @register(
     "astrbot_plugin_streamify_router",
     "LiJinHao999",
-    "非侵入式 LLM 稳流网关(使用aiohttp)，提升 LLM 稳定性与使用体验，提供工具调用强化与假非流支持，无感强化工具调用体验，静默重试&修复function calling请求体(尤其是gemini 工具调用空回问题)，无感解决非流式请求超时截断问题(429)，未来还可能提供更多功能支持",
-    "0.1.0",
+    "Astrbot 非侵入式 LLM 稳流网关(使用aiohttp)，提升 LLM 稳定性与使用体验，提供工具调用强化与假非流转发支持，无感强化工具调用体验，静默重试&修复function calling请求体(尤其是gemini 工具调用空回问题)，无感解决非流式请求超时截断问题(429)，如果你在使用LLM(目前尤其是gemini)的过程中频繁遇到这类报错，可以尝试一下这个插件",
+    "1.0.0",
     "https://github.com/LiJinHao999/astrbot_plugin_streamify_router",
 )
 class StreamifyPlugin(Star):

@@ -8,6 +8,7 @@ import aiohttp
 from aiohttp import ClientResponse, ClientSession, web
 
 from astrbot.api import logger
+from astrbot.api.star import StarTools
 
 from .fake_non_stream import OpenAIFakeNonStream, ClaudeFakeNonStream, GeminiFakeNonStream
 from .fc_enhance import (
@@ -96,10 +97,9 @@ class ProviderHandler:
         extra_patterns = tool_error_patterns if tool_error_patterns is not None else []
         patterns = _DEFAULT_TOOL_ERROR_PATTERNS + [p for p in extra_patterns if p not in _DEFAULT_TOOL_ERROR_PATTERNS]
         self._error_patterns: List[Pattern[str]] = _compile_error_patterns(patterns)
-        self._hint_tools_path = (
-            pathlib.Path(__file__).parent
-            / f"hint_tools_{self.__class__.__name__.lower()}.json"
-        )
+        plugin_data_dir = pathlib.Path(StarTools.get_data_dir())
+        plugin_data_dir.mkdir(parents=True, exist_ok=True)
+        self._hint_tools_path = plugin_data_dir / f"hint_tools_{self.__class__.__name__.lower()}.json"
         try:
             self._hint_tools: set = set(
                 json.loads(self._hint_tools_path.read_text("utf-8"))
@@ -114,8 +114,8 @@ class ProviderHandler:
                 json.dumps(sorted(self._hint_tools), ensure_ascii=False),
                 encoding="utf-8",
             )
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning("Failed to save hint tools: %s", exc)
 
     @staticmethod
     def _normalize_timeout(value: Any, default: float = 120.0) -> float:

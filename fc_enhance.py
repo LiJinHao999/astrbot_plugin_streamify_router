@@ -2,7 +2,7 @@ import json
 import re
 import time
 from typing import Any, Dict, List, Optional, Pattern, Tuple
-
+from astrbot.api import logger
 from .fake_non_stream import _EMPTY_ARGS_HINT
 
 # 默认工具错误识别正则列表（用户可在配置中覆盖）
@@ -27,7 +27,7 @@ def _compile_error_patterns(patterns: List[str]) -> List[Pattern[str]]:
             compiled.append(re.compile(p))
         except re.error as exc:
             # 避免在模块加载时引入 logger 循环依赖，使用 print 降级
-            print(f"[Streamify] 无效的工具错误正则表达式 {p!r}，已跳过: {exc}")
+            logger.warning(f"[Streamify] 无效的工具错误正则表达式 {p!r}，已跳过: {exc}")
     return compiled
 
 
