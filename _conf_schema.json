@@ -1,8 +1,9 @@
 {
-  "enabled": {
-    "description": "启用稳流代理",
+  "pseudo_non_stream": {
+    "description": "是否启用假非流",
     "type": "bool",
-    "default": true
+    "default": true,
+    "hint": "开启后，将 AstrBot 发来的非流式请求强制改为流式发给上游，获取 SSE 响应后重组为非流式 JSON 返回，防止因无响应超时导致的连接断开"
   },
   "debug": {
     "description": "启用调试日志",
@@ -22,17 +23,17 @@
     "default": 120.0,
     "hint": "全局连接/读取超时，防止上游连接永久挂起"
   },
-  "gemini_fix_retries": {
-    "description": "Gemini 空参数重试次数",
+  "fix_retries": {
+    "description": "空参数重试次数",
     "type": "int",
-    "default": 2,
-    "hint": "Gemini thinking 模式下工具调用参数为空时，注入提示并重试的最大次数，0 表示禁用"
+    "default": 1,
+    "hint": "工具调用参数为空时，注入提示并重试的最大次数，0 表示禁用（目前仅 Gemini 使用）"
   },
   "extract_args": {
-    "description": "启用工具参数 JSON 提取增强（适用于 Gemini/OpenAI/Claude）",
+    "description": "启用 FC 增强（工具参数 JSON 提取）",
     "type": "bool",
     "default": false,
-    "hint": "开启后，若工具调用参数为空或无效，会额外发送一条请求让模型单独输出 JSON 参数，再注入回原响应"
+    "hint": "开启后，若工具调用参数为空或无效，会额外发送一条请求让模型单独输出 JSON 参数，再注入回原响应（适用于 Gemini/OpenAI/Claude）"
   },
   "providers": {
     "type": "template_list",

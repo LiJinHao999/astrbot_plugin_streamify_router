@@ -10,7 +10,7 @@ from .proxy import StreamifyProxy
 @register(
     "astrbot_plugin_streamify_router",
     "LiJinHao999",
-    "LLM 稳流网关，提升 LLM 稳定性与使用体验，提供工具调用强化与假非流支持，无感强化工具调用体验，让你的小模型也能完美地function calling，无感解决非流式请求超时截断问题(429)，未来可能还有更多功能支持",
+    "LLM非流请求稳流网关，将非流请求转为流式，防止部分包装了cloudflare的中转因无响应超时自动关闭，解决神秘的 'NoneType' object has no attribute 'get' 问题",
     "0.1.0",
     "https://github.com/LiJinHao999/astrbot_plugin_streamify_router",
 )
@@ -97,8 +97,19 @@ class StreamifyPlugin(Star):
                 logger.warning("Failed to save generated provider forward_url: %s", exc)
 
     async def initialize(self):
-        if not self.config.get("enabled", True):
-            logger.info("Streamify proxy disabled")
+        # 向后兼容读取配置项
+        pseudo_non_stream = bool(
+            self.config.get("pseudo_non_stream", self.config.get("enabled", True))
+        )
+        fix_retries = int(
+            self.config.get("fix_retries", self.config.get("gemini_fix_retries", 1))
+        )
+        extract_args = bool(
+            self.config.get("extract_args", self.config.get("gemini_extract_args", False))
+        )
+
+        if not pseudo_non_stream and not extract_args:
+            logger.info("Streamify: 假非流与 FC 增强均已禁用，代理不启动")
             return
 
         port = self.config.get("port", 23456)
@@ -112,8 +123,9 @@ class StreamifyPlugin(Star):
             providers=providers,
             debug=debug,
             request_timeout=request_timeout,
-            gemini_fix_retries=self.config.get("gemini_fix_retries", 2),
-            extract_args=bool(self.config.get("extract_args", self.config.get("gemini_extract_args", False))),
+            pseudo_non_stream=pseudo_non_stream,
+            extract_args=extract_args,
+            fix_retries=fix_retries,
         )
         await self.proxy.start()
 

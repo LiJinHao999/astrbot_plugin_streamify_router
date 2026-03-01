@@ -1,4 +1,4 @@
-﻿import json
+import json
 import pathlib
 import re
 import time
@@ -8,6 +8,9 @@ import aiohttp
 from aiohttp import ClientResponse, ClientSession, web
 
 from astrbot.api import logger
+
+from .fake_non_stream import OpenAIFakeNonStream, ClaudeFakeNonStream, GeminiFakeNonStream
+from .fc_enhance import OpenAIFCEnhance, ClaudeFCEnhance, GeminiFCEnhance
 
 # 匹配长 base64/base32 字符串（≥64 个字符）
 _LONG_BASE64_RE = re.compile(r'^[A-Za-z0-9+/\-_]{64,}={0,3}$')
@@ -29,14 +32,6 @@ def _sanitize_for_log(obj: Any, _depth: int = 0) -> Any:
     return obj
 
 
-# 注入到请求的提示，引导模型正确填写工具参数
-_EMPTY_ARGS_HINT = (
-    "IMPORTANT: When calling a tool/function, you MUST provide valid JSON for ALL "
-    "required arguments. Never invoke a tool with an empty argument object {} if the "
-    "tool has required parameters. Fill every required field before calling the tool."
-)
-
-
 class ProviderHandler:
     """Base handler for forwarding and stream utilities."""
 
@@ -47,12 +42,18 @@ class ProviderHandler:
         session: Optional[ClientSession] = None,
         debug: bool = False,
         request_timeout: float = 120.0,
+        pseudo_non_stream: bool = True,
+        extract_args: bool = False,
+        fix_retries: int = 1,
     ):
         self.target = target_url.rstrip("/")
         self.proxy = proxy_url.strip() or None
         self.session = session
         self.debug = bool(debug)
         self.request_timeout = self._normalize_timeout(request_timeout)
+        self.pseudo_non_stream = bool(pseudo_non_stream)
+        self.extract_args = bool(extract_args)
+        self.fix_retries = max(0, int(fix_retries))
 
     @staticmethod
     def _normalize_timeout(value: Any, default: float = 120.0) -> float:
@@ -200,339 +201,11 @@ class ProviderHandler:
             yield event_name, "\n".join(data_lines)
 
 
-class OpenAIChatHandler(ProviderHandler):
+class OpenAIChatHandler(ProviderHandler, OpenAIFakeNonStream, OpenAIFCEnhance):
     ENDPOINT = "v1/chat/completions"
-
-    def __init__(
-        self,
-        target_url: str,
-        proxy_url: str = "",
-        session=None,
-        debug: bool = False,
-        request_timeout: float = 120.0,
-        extract_args: bool = False,
-    ):
-        super().__init__(target_url, proxy_url, session=session, debug=debug, request_timeout=request_timeout)
-        self.extract_args = bool(extract_args)
 
     def matches(self, sub_path: str) -> bool:
         return sub_path.strip("/") == self.ENDPOINT
-
-    @staticmethod
-    def _safe_int(value: Any, default: int = 0) -> int:
-        try:
-            return int(value)
-        except (TypeError, ValueError):
-            return default
-
-    @staticmethod
-    def _new_choice_slot() -> Dict[str, Any]:
-        return {
-            "role": "assistant",
-            "content_parts": [],
-            "finish_reason": None,
-            "tool_calls": {},
-            "tool_calls_seen": False,
-            "legacy_function_call_seen": False,
-        }
-
-    @staticmethod
-    def _new_tool_slot() -> Dict[str, Any]:
-        return {
-            "id": "",
-            "type": "function",
-            "function": {"name": "", "arguments": []},
-        }
-
-    @staticmethod
-    def _normalize_arguments_piece(arguments: Any) -> Optional[str]:
-        if isinstance(arguments, str):
-            return arguments
-        if arguments is None:
-            return None
-        try:
-            return json.dumps(arguments, separators=(",", ":"))
-        except (TypeError, ValueError):
-            return str(arguments)
-
-    def _apply_function_payload(
-        self,
-        tc_slot: Dict[str, Any],
-        function_payload: Any,
-        append_arguments: bool,
-    ) -> None:
-        if not isinstance(function_payload, dict):
-            return
-        if isinstance(function_payload.get("name"), str):
-            tc_slot["function"]["name"] = function_payload["name"]
-        arguments_piece = self._normalize_arguments_piece(function_payload.get("arguments"))
-        if arguments_piece is None:
-            return
-        if append_arguments:
-            tc_slot["function"]["arguments"].append(arguments_piece)
-        else:
-            tc_slot["function"]["arguments"] = [arguments_piece]
-
-    def _update_tool_calls(
-        self,
-        slot: Dict[str, Any],
-        payload: Dict[str, Any],
-        append_arguments: bool,
-    ) -> None:
-        tool_calls = payload.get("tool_calls")
-        if isinstance(tool_calls, list):
-            slot["tool_calls_seen"] = True
-        for fallback_idx, tool_call in enumerate(tool_calls or []):
-            if not isinstance(tool_call, dict):
-                continue
-
-            tc_idx = self._safe_int(tool_call.get("index", fallback_idx), fallback_idx)
-            tc_slot = slot["tool_calls"].setdefault(tc_idx, self._new_tool_slot())
-            if isinstance(tool_call.get("id"), str):
-                tc_slot["id"] = tool_call["id"]
-            if isinstance(tool_call.get("type"), str):
-                tc_slot["type"] = tool_call["type"]
-            self._apply_function_payload(
-                tc_slot,
-                tool_call.get("function") or {},
-                append_arguments=append_arguments,
-            )
-
-        function_call = payload.get("function_call")
-        if isinstance(function_call, dict):
-            slot["legacy_function_call_seen"] = True
-            tc_slot = slot["tool_calls"].setdefault(0, self._new_tool_slot())
-            self._apply_function_payload(
-                tc_slot,
-                function_call,
-                append_arguments=append_arguments,
-            )
-
-    def _update_choice_slot(self, slot: Dict[str, Any], choice: Dict[str, Any]) -> None:
-        delta = choice.get("delta") or {}
-        message = choice.get("message") or {}
-
-        if isinstance(delta.get("role"), str):
-            slot["role"] = delta["role"]
-        elif isinstance(message.get("role"), str):
-            slot["role"] = message["role"]
-
-        content_delta = delta.get("content")
-        if isinstance(content_delta, str):
-            slot["content_parts"].append(content_delta)
-        elif isinstance(content_delta, list):
-            for part in content_delta:
-                if not isinstance(part, dict):
-                    continue
-                text = part.get("text")
-                if isinstance(text, str):
-                    slot["content_parts"].append(text)
-
-        content_message = message.get("content")
-        if isinstance(content_message, str):
-            slot["content_parts"] = [content_message]
-        elif isinstance(content_message, list):
-            full_parts: List[str] = []
-            for part in content_message:
-                if not isinstance(part, dict):
-                    continue
-                text = part.get("text")
-                if isinstance(text, str):
-                    full_parts.append(text)
-            if full_parts:
-                slot["content_parts"] = full_parts
-
-        self._update_tool_calls(slot, delta, append_arguments=True)
-        self._update_tool_calls(slot, message, append_arguments=False)
-
-        if choice.get("finish_reason") is not None:
-            slot["finish_reason"] = choice.get("finish_reason")
-
-    @staticmethod
-    def _merge_chunk_meta(result: Dict[str, Any], chunk: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-        if not result["id"] and chunk.get("id"):
-            result["id"] = chunk["id"]
-        if not result["model"] and chunk.get("model"):
-            result["model"] = chunk["model"]
-        if chunk.get("created"):
-            result["created"] = chunk["created"]
-        if chunk.get("system_fingerprint"):
-            result["system_fingerprint"] = chunk["system_fingerprint"]
-        if isinstance(chunk.get("usage"), dict):
-            return chunk["usage"]
-        return None
-
-    @staticmethod
-    def _build_choice_output(idx: int, slot: Dict[str, Any]) -> Dict[str, Any]:
-        message: Dict[str, Any] = {
-            "role": slot["role"],
-            "content": "".join(slot["content_parts"]),
-        }
-        inferred_finish_reason = "stop"
-        if slot["tool_calls"]:
-            assembled_tools = []
-            for tc_idx in sorted(slot["tool_calls"].keys()):
-                tool = slot["tool_calls"][tc_idx]
-                assembled_tools.append(
-                    {
-                        "id": tool["id"] or f"call_{tc_idx}",
-                        "type": tool["type"] or "function",
-                        "function": {
-                            "name": tool["function"]["name"],
-                            "arguments": "".join(tool["function"]["arguments"]),
-                        },
-                    }
-                )
-
-            if slot.get("tool_calls_seen"):
-                message["tool_calls"] = assembled_tools
-                inferred_finish_reason = "tool_calls"
-            elif slot.get("legacy_function_call_seen") and len(assembled_tools) == 1:
-                message["function_call"] = assembled_tools[0]["function"]
-                inferred_finish_reason = "function_call"
-            else:
-                message["tool_calls"] = assembled_tools
-                inferred_finish_reason = "tool_calls"
-
-            if message["content"] == "":
-                message["content"] = None
-
-        return {
-            "index": idx,
-            "message": message,
-            "finish_reason": slot["finish_reason"] or inferred_finish_reason,
-        }
-
-    async def _build_non_stream_response(self, resp: ClientResponse) -> Dict[str, Any]:
-        result: Dict[str, Any] = {
-            "id": "",
-            "object": "chat.completion",
-            "created": int(time.time()),
-            "model": "",
-            "choices": [],
-        }
-        choices: Dict[int, Dict[str, Any]] = {}
-        usage: Optional[Dict[str, Any]] = None
-
-        async for _event, data in self._iter_sse_events(resp):
-            if not data:
-                continue
-            if data == "[DONE]":
-                break
-
-            try:
-                chunk = json.loads(data)
-            except json.JSONDecodeError:
-                continue
-
-            merged_usage = self._merge_chunk_meta(result, chunk)
-            if merged_usage is not None:
-                usage = merged_usage
-
-            for choice in chunk.get("choices", []):
-                idx = self._safe_int(choice.get("index", 0))
-                slot = choices.setdefault(idx, self._new_choice_slot())
-                self._update_choice_slot(slot, choice)
-
-        for idx in sorted(choices.keys()):
-            result["choices"].append(self._build_choice_output(idx, choices[idx]))
-
-        if usage is not None:
-            result["usage"] = usage
-        if not result["id"]:
-            result["id"] = f"chatcmpl-proxy-{int(time.time() * 1000)}"
-        return result
-
-    @staticmethod
-    def _find_failed_function_call(response_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-        for choice in response_data.get("choices", []):
-            message = (choice.get("message") or {})
-            for tc in (message.get("tool_calls") or []):
-                if not isinstance(tc, dict):
-                    continue
-                fn = tc.get("function") or {}
-                args = fn.get("arguments", "")
-                if not args or args == "{}":
-                    return tc
-                try:
-                    json.loads(args)
-                except json.JSONDecodeError:
-                    return tc
-        return None
-
-    @staticmethod
-    def _patch_function_call_args(
-        response_data: Dict[str, Any], function_name: str, args: Dict[str, Any]
-    ) -> None:
-        for choice in response_data.get("choices", []):
-            message = (choice.get("message") or {})
-            for tc in (message.get("tool_calls") or []):
-                if not isinstance(tc, dict):
-                    continue
-                fn = tc.get("function") or {}
-                if fn.get("name") == function_name:
-                    fn["arguments"] = json.dumps(args)
-                    return
-
-    async def _extract_args_as_json(
-        self,
-        original_body: Dict[str, Any],
-        function_name: str,
-        sub_path: str,
-        headers: Dict[str, str],
-    ) -> Optional[Dict[str, Any]]:
-        func_desc = ""
-        func_schema: Dict[str, Any] = {}
-        for tool in original_body.get("tools", []):
-            fn = (tool.get("function") or {})
-            if fn.get("name") == function_name:
-                func_desc = fn.get("description", "")
-                func_schema = fn.get("parameters", {})
-                break
-
-        tool_system = (
-            f"你是一个参数提取助手。用户正在使用工具 `{function_name}`。\n"
-            f"工具说明：{func_desc}\n"
-            f"参数 schema：{json.dumps(func_schema, ensure_ascii=False)}\n"
-            f"根据对话内容，只输出调用该工具所需的 JSON 参数对象，不要包含任何其他文字。"
-        )
-
-        messages = [{"role": "system", "content": tool_system}]
-        for msg in original_body.get("messages", []):
-            if isinstance(msg, dict) and msg.get("role") != "system":
-                messages.append(msg)
-
-        extract_body: Dict[str, Any] = {
-            "model": original_body.get("model", ""),
-            "messages": messages,
-            "response_format": {"type": "json_object"},
-            "stream": True,
-        }
-
-        try:
-            async with self._request(
-                "POST",
-                self._build_url(sub_path),
-                json=extract_body,
-                headers=headers,
-            ) as resp:
-                if resp.status != 200:
-                    return None
-                result = await self._build_non_stream_response(resp)
-                choices = result.get("choices", [])
-                if not choices:
-                    return None
-                content = (choices[0].get("message") or {}).get("content", "")
-                if not content:
-                    return None
-                content = content.strip()
-                if content.startswith("```"):
-                    lines = content.splitlines()
-                    content = "\n".join(lines[1:-1] if lines[-1].strip() == "```" else lines[1:])
-                parsed = json.loads(content)
-                return parsed if isinstance(parsed, dict) else None
-        except Exception:
-            return None
 
     async def handle(self, req: web.Request, sub_path: str) -> web.Response:
         if req.method.upper() != "POST" or not self.matches(sub_path):
@@ -543,8 +216,41 @@ class OpenAIChatHandler(ProviderHandler):
             return await self._passthrough(req, sub_path)
 
         headers = self._forward_headers(req)
+
+        # Stream requests always pass through directly
         if body.get("stream"):
             return await self._proxy_stream(req, sub_path, body, headers)
+
+        # Layer 2 (Reactive): 检测传入请求中是否已有工具执行错误
+        if self.extract_args:
+            error_info = self._find_tool_error_in_request(body)
+            if error_info is not None:
+                tool_name, tool_call_id, assistant_msg_idx = error_info
+                ctx_messages = body["messages"][:assistant_msg_idx]
+                extracted = await self._extract_args_as_json(
+                    body, tool_name, sub_path, headers,
+                    messages_override=ctx_messages,
+                )
+                if extracted is not None:
+                    if self.debug:
+                        logger.info(
+                            "Streamify [Layer2]: 修正 OpenAI 工具 %s 的参数: %s",
+                            tool_name, extracted,
+                        )
+                    return web.json_response(
+                        self._build_corrected_tool_response(
+                            tool_call_id, tool_name, extracted, body.get("model", "")
+                        )
+                    )
+                elif self.debug:
+                    logger.info(
+                        "Streamify [Layer2]: OpenAI 工具 %s 参数提取失败，继续正常转发",
+                        tool_name,
+                    )
+
+        # 假非流禁用时直通
+        if not self.pseudo_non_stream:
+            return await self._passthrough(req, sub_path)
 
         body["stream"] = True
         async with self._request(
@@ -563,8 +269,9 @@ class OpenAIChatHandler(ProviderHandler):
 
             result = await self._build_non_stream_response(resp)
 
+        # Layer 1 (Proactive): 对照 schema 检测响应中是否缺少必填参数
         if self.extract_args:
-            failed_tc = self._find_failed_function_call(result)
+            failed_tc = self._find_failed_function_call(result, body.get("tools", []))
             if failed_tc is not None:
                 function_name = (failed_tc.get("function") or {}).get("name", "")
                 extracted = await self._extract_args_as_json(
@@ -573,221 +280,21 @@ class OpenAIChatHandler(ProviderHandler):
                 if extracted is not None:
                     self._patch_function_call_args(result, function_name, extracted)
                     if self.debug:
-                        logger.info("Streamify: 成功提取 OpenAI 工具 %s 的参数: %s", function_name, extracted)
+                        logger.info(
+                            "Streamify [Layer1]: 成功提取 OpenAI 工具 %s 的参数: %s",
+                            function_name, extracted,
+                        )
                 elif self.debug:
-                    logger.info("Streamify: OpenAI JSON 参数提取失败，返回原始响应")
+                    logger.info("Streamify [Layer1]: OpenAI JSON 参数提取失败，返回原始响应")
 
         return web.json_response(result)
 
 
-class ClaudeHandler(ProviderHandler):
+class ClaudeHandler(ProviderHandler, ClaudeFakeNonStream, ClaudeFCEnhance):
     ENDPOINT = "v1/messages"
-
-    def __init__(
-        self,
-        target_url: str,
-        proxy_url: str = "",
-        session=None,
-        debug: bool = False,
-        request_timeout: float = 120.0,
-        extract_args: bool = False,
-    ):
-        super().__init__(target_url, proxy_url, session=session, debug=debug, request_timeout=request_timeout)
-        self.extract_args = bool(extract_args)
 
     def matches(self, sub_path: str) -> bool:
         return sub_path.strip("/") == self.ENDPOINT
-
-    @staticmethod
-    def _safe_int(value: Any, default: int = 0) -> int:
-        try:
-            return int(value)
-        except (TypeError, ValueError):
-            return default
-
-    @staticmethod
-    def _init_state() -> Dict[str, Any]:
-        return {
-            "message_id": "",
-            "model": "",
-            "role": "assistant",
-            "stop_reason": None,
-            "stop_sequence": None,
-            "usage": {"input_tokens": 0, "output_tokens": 0},
-            "content_blocks": {},
-        }
-
-    @staticmethod
-    def _handle_message_start(state: Dict[str, Any], payload: Dict[str, Any]) -> None:
-        message = payload.get("message") or {}
-        if isinstance(message.get("id"), str):
-            state["message_id"] = message["id"]
-        if isinstance(message.get("model"), str):
-            state["model"] = message["model"]
-        if isinstance(message.get("role"), str):
-            state["role"] = message["role"]
-
-        start_usage = message.get("usage") or {}
-        if isinstance(start_usage.get("input_tokens"), int):
-            state["usage"]["input_tokens"] = start_usage["input_tokens"]
-
-        initial_content = message.get("content")
-        if isinstance(initial_content, list):
-            for idx, block in enumerate(initial_content):
-                if isinstance(block, dict):
-                    state["content_blocks"][idx] = dict(block)
-
-    def _handle_content_block_start(self, state: Dict[str, Any], payload: Dict[str, Any]) -> None:
-        idx = self._safe_int(payload.get("index", len(state["content_blocks"])))
-        block = payload.get("content_block") or {}
-        if isinstance(block, dict):
-            state["content_blocks"][idx] = dict(block)
-
-    def _handle_content_block_delta(self, state: Dict[str, Any], payload: Dict[str, Any]) -> None:
-        idx = self._safe_int(payload.get("index", 0))
-        block = state["content_blocks"].setdefault(idx, {"type": "text", "text": ""})
-        delta = payload.get("delta") or {}
-        delta_type = delta.get("type")
-
-        if delta_type == "text_delta":
-            block["type"] = "text"
-            block["text"] = f"{block.get('text', '')}{delta.get('text', '')}"
-        elif delta_type == "input_json_delta":
-            block["_input_json"] = (
-                f"{block.get('_input_json', '')}{delta.get('partial_json', '')}"
-            )
-
-    @staticmethod
-    def _handle_message_delta(state: Dict[str, Any], payload: Dict[str, Any]) -> None:
-        delta = payload.get("delta") or {}
-        if "stop_reason" in delta:
-            state["stop_reason"] = delta.get("stop_reason")
-        if "stop_sequence" in delta:
-            state["stop_sequence"] = delta.get("stop_sequence")
-
-        delta_usage = payload.get("usage") or {}
-        if isinstance(delta_usage.get("output_tokens"), int):
-            state["usage"]["output_tokens"] = delta_usage["output_tokens"]
-
-    @staticmethod
-    def _build_content(content_blocks: Dict[int, Dict[str, Any]]) -> List[Dict[str, Any]]:
-        content: List[Dict[str, Any]] = []
-        for idx in sorted(content_blocks.keys()):
-            block = dict(content_blocks[idx])
-            partial_input = block.pop("_input_json", None)
-            if isinstance(partial_input, str) and partial_input:
-                try:
-                    block["input"] = json.loads(partial_input)
-                except json.JSONDecodeError:
-                    block["input"] = partial_input
-            content.append(block)
-        return content
-
-    async def _build_non_stream_response(self, resp: ClientResponse) -> Dict[str, Any]:
-        state = self._init_state()
-        async for event_name, data in self._iter_sse_events(resp):
-            if not data:
-                continue
-            try:
-                payload = json.loads(data)
-            except json.JSONDecodeError:
-                continue
-
-            event_type = event_name or payload.get("type")
-            if event_type == "message_start":
-                self._handle_message_start(state, payload)
-            elif event_type == "content_block_start":
-                self._handle_content_block_start(state, payload)
-            elif event_type == "content_block_delta":
-                self._handle_content_block_delta(state, payload)
-            elif event_type == "message_delta":
-                self._handle_message_delta(state, payload)
-
-        return {
-            "id": state["message_id"] or f"msg_proxy_{int(time.time() * 1000)}",
-            "type": "message",
-            "role": state["role"],
-            "model": state["model"],
-            "content": self._build_content(state["content_blocks"]),
-            "stop_reason": state["stop_reason"],
-            "stop_sequence": state["stop_sequence"],
-            "usage": state["usage"],
-        }
-
-    @staticmethod
-    def _find_failed_function_call(response_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-        for block in response_data.get("content", []):
-            if not isinstance(block, dict):
-                continue
-            if block.get("type") == "tool_use" and not block.get("input"):
-                return block
-        return None
-
-    @staticmethod
-    def _patch_function_call_args(
-        response_data: Dict[str, Any], function_name: str, args: Dict[str, Any]
-    ) -> None:
-        for block in response_data.get("content", []):
-            if not isinstance(block, dict):
-                continue
-            if block.get("type") == "tool_use" and block.get("name") == function_name:
-                block["input"] = args
-                return
-
-    async def _extract_args_as_json(
-        self,
-        original_body: Dict[str, Any],
-        function_name: str,
-        sub_path: str,
-        headers: Dict[str, str],
-    ) -> Optional[Dict[str, Any]]:
-        func_desc = ""
-        input_schema: Dict[str, Any] = {}
-        for tool in original_body.get("tools", []):
-            if not isinstance(tool, dict):
-                continue
-            if tool.get("name") == function_name:
-                func_desc = tool.get("description", "")
-                input_schema = tool.get("input_schema", {})
-                break
-
-        tool_system = (
-            f"你是一个参数提取助手。用户正在使用工具 `{function_name}`。\n"
-            f"工具说明：{func_desc}\n"
-            f"参数 schema：{json.dumps(input_schema, ensure_ascii=False)}\n"
-            f"根据对话内容，只输出调用该工具所需的 JSON 参数对象，不要包含任何其他文字。"
-        )
-
-        extract_body: Dict[str, Any] = {
-            "model": original_body.get("model", ""),
-            "max_tokens": original_body.get("max_tokens", 1024),
-            "system": tool_system,
-            "messages": original_body.get("messages", []),
-            "stream": True,
-        }
-
-        try:
-            async with self._request(
-                "POST",
-                self._build_url(sub_path),
-                json=extract_body,
-                headers=headers,
-            ) as resp:
-                if resp.status != 200:
-                    return None
-                result = await self._build_non_stream_response(resp)
-                for block in result.get("content", []):
-                    if isinstance(block, dict) and block.get("type") == "text":
-                        text = block.get("text", "").strip()
-                        if text:
-                            if text.startswith("```"):
-                                lines = text.splitlines()
-                                text = "\n".join(lines[1:-1] if lines[-1].strip() == "```" else lines[1:])
-                            parsed = json.loads(text)
-                            return parsed if isinstance(parsed, dict) else None
-                return None
-        except Exception:
-            return None
 
     async def handle(self, req: web.Request, sub_path: str) -> web.Response:
         if req.method.upper() != "POST" or not self.matches(sub_path):
@@ -798,8 +305,41 @@ class ClaudeHandler(ProviderHandler):
             return await self._passthrough(req, sub_path)
 
         headers = self._forward_headers(req)
+
+        # Stream requests always pass through directly
         if body.get("stream"):
             return await self._proxy_stream(req, sub_path, body, headers)
+
+        # Layer 2 (Reactive): 检测传入请求中是否已有工具执行错误
+        if self.extract_args:
+            error_info = self._find_tool_error_in_request(body)
+            if error_info is not None:
+                tool_name, tool_use_id, assistant_msg_idx = error_info
+                ctx_messages = body["messages"][:assistant_msg_idx]
+                extracted = await self._extract_args_as_json(
+                    body, tool_name, sub_path, headers,
+                    messages_override=ctx_messages,
+                )
+                if extracted is not None:
+                    if self.debug:
+                        logger.info(
+                            "Streamify [Layer2]: 修正 Claude 工具 %s 的参数: %s",
+                            tool_name, extracted,
+                        )
+                    return web.json_response(
+                        self._build_corrected_tool_response(
+                            tool_use_id, tool_name, extracted, body.get("model", "")
+                        )
+                    )
+                elif self.debug:
+                    logger.info(
+                        "Streamify [Layer2]: Claude 工具 %s 参数提取失败，继续正常转发",
+                        tool_name,
+                    )
+
+        # 假非流禁用时直通
+        if not self.pseudo_non_stream:
+            return await self._passthrough(req, sub_path)
 
         body["stream"] = True
         async with self._request(
@@ -818,8 +358,9 @@ class ClaudeHandler(ProviderHandler):
 
             response_data = await self._build_non_stream_response(resp)
 
+        # Layer 1 (Proactive): 对照 schema 检测响应中是否缺少必填参数
         if self.extract_args:
-            failed_block = self._find_failed_function_call(response_data)
+            failed_block = self._find_failed_function_call(response_data, body.get("tools", []))
             if failed_block is not None:
                 function_name = failed_block.get("name", "")
                 extracted = await self._extract_args_as_json(
@@ -828,134 +369,20 @@ class ClaudeHandler(ProviderHandler):
                 if extracted is not None:
                     self._patch_function_call_args(response_data, function_name, extracted)
                     if self.debug:
-                        logger.info("Streamify: 成功提取 Claude 工具 %s 的参数: %s", function_name, extracted)
+                        logger.info(
+                            "Streamify [Layer1]: 成功提取 Claude 工具 %s 的参数: %s",
+                            function_name, extracted,
+                        )
                 elif self.debug:
-                    logger.info("Streamify: Claude JSON 参数提取失败，返回原始响应")
+                    logger.info("Streamify [Layer1]: Claude JSON 参数提取失败，返回原始响应")
 
         return web.json_response(response_data)
 
-class GeminiHandler(ProviderHandler):
-    def __init__(
-        self,
-        target_url: str,
-        proxy_url: str = "",
-        session=None,
-        debug: bool = False,
-        request_timeout: float = 120.0,
-        gemini_fix_retries: int = 2,
-        extract_args: bool = False,
-    ):
-        super().__init__(target_url, proxy_url, session=session, debug=debug, request_timeout=request_timeout)
-        self.gemini_fix_retries = max(0, int(gemini_fix_retries))
-        self.extract_args = bool(extract_args)
 
+class GeminiHandler(ProviderHandler, GeminiFakeNonStream, GeminiFCEnhance):
     def matches(self, sub_path: str) -> bool:
         path = sub_path.strip("/")
         return ":generateContent" in path or ":streamGenerateContent" in path
-
-    @staticmethod
-    def _init_state() -> Dict[str, Any]:
-        return {
-            "content_parts": {},
-            "candidate_meta": {},
-            "role": "model",
-            "usage_metadata": None,
-            "prompt_feedback": None,
-            "model_version": None,
-        }
-
-    @staticmethod
-    def _first_candidate(payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-        candidates = payload.get("candidates")
-        if not isinstance(candidates, list) or not candidates:
-            return None
-        candidate = candidates[0]
-        return candidate if isinstance(candidate, dict) else None
-
-    @staticmethod
-    def _merge_value(existing: Any, incoming: Any) -> Any:
-        if isinstance(existing, dict) and isinstance(incoming, dict):
-            merged = dict(existing)
-            for key, value in incoming.items():
-                if key in merged:
-                    merged[key] = GeminiHandler._merge_value(merged[key], value)
-                else:
-                    merged[key] = value
-            return merged
-        return incoming
-
-    @staticmethod
-    def _append_content_parts(state: Dict[str, Any], content: Dict[str, Any]) -> None:
-        if isinstance(content.get("role"), str):
-            state["role"] = content["role"]
-
-        parts = content.get("parts")
-        if not isinstance(parts, list):
-            return
-        for idx, part in enumerate(parts):
-            if not isinstance(part, dict):
-                continue
-            slot = state["content_parts"].setdefault(idx, {})
-            text = part.get("text")
-            if isinstance(text, str):
-                if isinstance(slot.get("text"), str):
-                    slot["text"] = f"{slot['text']}{text}"
-                else:
-                    slot["text"] = text
-            for key, value in part.items():
-                if key == "text":
-                    continue
-                slot[key] = GeminiHandler._merge_value(slot.get(key), value)
-
-    @staticmethod
-    def _merge_payload(state: Dict[str, Any], payload: Dict[str, Any]) -> None:
-        candidate = GeminiHandler._first_candidate(payload)
-        if candidate is not None:
-            content = candidate.get("content")
-            if isinstance(content, dict):
-                GeminiHandler._append_content_parts(state, content)
-
-            for key, value in candidate.items():
-                if key != "content":
-                    state["candidate_meta"][key] = value
-
-        if isinstance(payload.get("usageMetadata"), dict):
-            state["usage_metadata"] = payload["usageMetadata"]
-        if isinstance(payload.get("promptFeedback"), dict):
-            state["prompt_feedback"] = payload["promptFeedback"]
-        if isinstance(payload.get("modelVersion"), str):
-            state["model_version"] = payload["modelVersion"]
-
-    async def _build_non_stream_response(self, resp: ClientResponse) -> Dict[str, Any]:
-        state = self._init_state()
-        async for _event, data in self._iter_sse_events(resp):
-            if not data:
-                continue
-            try:
-                payload = json.loads(data)
-            except json.JSONDecodeError:
-                continue
-            self._merge_payload(state, payload)
-
-        candidate_out: Dict[str, Any] = dict(state["candidate_meta"])
-        merged_parts: List[Dict[str, Any]] = []
-        for idx in sorted(state["content_parts"].keys()):
-            part = state["content_parts"][idx]
-            if isinstance(part, dict):
-                merged_parts.append(part)
-        candidate_out["content"] = {
-            "role": state["role"],
-            "parts": merged_parts if merged_parts else [{"text": ""}],
-        }
-
-        response_data: Dict[str, Any] = {"candidates": [candidate_out]}
-        if state["usage_metadata"] is not None:
-            response_data["usageMetadata"] = state["usage_metadata"]
-        if state["prompt_feedback"] is not None:
-            response_data["promptFeedback"] = state["prompt_feedback"]
-        if state["model_version"] is not None:
-            response_data["modelVersion"] = state["model_version"]
-        return response_data
 
     async def handle(self, req: web.Request, sub_path: str) -> web.Response:
         if req.method.upper() != "POST" or not self.matches(sub_path):
@@ -974,6 +401,37 @@ class GeminiHandler(ProviderHandler):
         params = {k: v for k, v in req.query.items()}
         params["alt"] = "sse"
 
+        # Layer 2 (Reactive): 检测传入请求中是否已有工具执行错误
+        if self.extract_args:
+            error_info = self._find_tool_error_in_request(body)
+            if error_info is not None:
+                tool_name, error_idx = error_info
+                ctx_contents = body["contents"][:max(0, error_idx - 1)]
+                extracted = await self._extract_args_as_json(
+                    body, tool_name, stream_path, headers, params,
+                    contents_override=ctx_contents,
+                )
+                if extracted is not None:
+                    if self.debug:
+                        logger.info(
+                            "Streamify [Layer2]: 修正 Gemini 工具 %s 的参数: %s",
+                            tool_name, extracted,
+                        )
+                    return web.json_response(
+                        self._build_corrected_tool_response(tool_name, extracted)
+                    )
+                elif self.debug:
+                    logger.info(
+                        "Streamify [Layer2]: Gemini 工具 %s 参数提取失败，继续正常转发",
+                        tool_name,
+                    )
+
+        tools = body.get("tools", [])
+
+        # 假非流禁用时直通
+        if not self.pseudo_non_stream:
+            return await self._passthrough(req, sub_path)
+
         async with self._request(
             "POST",
             self._build_url(stream_path),
@@ -989,28 +447,34 @@ class GeminiHandler(ProviderHandler):
                 )
             response_data = await self._build_non_stream_response(resp)
 
-        if not self._has_failed_function_call(response_data):
+        if not self._has_failed_function_call(response_data, tools):
             return web.json_response(response_data)
 
+        # Layer 1 (Proactive): 对照 schema 提取参数
         if self.extract_args:
-            failed_fc = self._find_failed_function_call(response_data)
+            failed_fc = self._find_failed_function_call(response_data, tools)
             if failed_fc is not None:
                 extracted = await self._extract_args_as_json(
                     body, failed_fc.get("name", ""), stream_path, headers, params
                 )
                 if extracted is not None:
-                    self._patch_function_call_args(response_data, failed_fc.get("name", ""), extracted)
+                    self._patch_function_call_args(
+                        response_data, failed_fc.get("name", ""), extracted
+                    )
                     if self.debug:
-                        logger.info("Streamify: 成功提取 %s 的参数: %s", failed_fc.get("name"), extracted)
+                        logger.info(
+                            "Streamify [Layer1]: 成功提取 Gemini 工具 %s 的参数: %s",
+                            failed_fc.get("name"), extracted,
+                        )
                     return web.json_response(response_data)
                 elif self.debug:
-                    logger.info("Streamify: JSON 参数提取失败，尝试提示注入重试")
+                    logger.info("Streamify [Layer1]: Gemini JSON 参数提取失败，尝试提示注入重试")
 
-        for attempt in range(self.gemini_fix_retries):
+        for attempt in range(self.fix_retries):
             if self.debug:
                 logger.info(
                     "Streamify: 检测到空工具参数，注入提示后重试 (%d/%d)",
-                    attempt + 1, self.gemini_fix_retries,
+                    attempt + 1, self.fix_retries,
                 )
             current_body = self._inject_hint(body)
             async with self._request(
@@ -1028,14 +492,14 @@ class GeminiHandler(ProviderHandler):
                     )
                 response_data = await self._build_non_stream_response(resp)
 
-            if not self._has_failed_function_call(response_data):
+            if not self._has_failed_function_call(response_data, tools):
                 return web.json_response(response_data)
 
-        failed_fc = self._find_failed_function_call(response_data)
+        failed_fc = self._find_failed_function_call(response_data, tools)
         function_name = failed_fc.get("name", "unknown") if failed_fc else "unknown"
         logger.warning(
             "Streamify: 工具 %s 参数在 %d 次重试后仍为空，放弃调用",
-            function_name, self.gemini_fix_retries,
+            function_name, self.fix_retries,
         )
         return web.json_response(
             {
@@ -1043,128 +507,13 @@ class GeminiHandler(ProviderHandler):
                     "code": 500,
                     "message": (
                         f"Gemini 未能为工具 `{function_name}` 生成有效参数，"
-                        f"已重试 {self.gemini_fix_retries} 次仍失败。"
+                        f"已重试 {self.fix_retries} 次仍失败。"
                     ),
                     "status": "FUNCTION_CALL_ARGS_EMPTY",
                 }
             },
             status=500,
         )
-
-    @staticmethod
-    def _has_failed_function_call(response_data: Dict[str, Any]) -> bool:
-        for candidate in response_data.get("candidates", []):
-            for part in candidate.get("content", {}).get("parts", []):
-                fc = part.get("functionCall")
-                if isinstance(fc, dict) and not fc.get("args"):
-                    return True
-        return False
-
-    @staticmethod
-    def _inject_hint(body: Dict[str, Any]) -> Dict[str, Any]:
-        body = dict(body)
-        hint_part = {"text": _EMPTY_ARGS_HINT}
-        sys_inst = body.get("systemInstruction")
-        if isinstance(sys_inst, dict):
-            parts = list(sys_inst.get("parts", []))
-            parts.append(hint_part)
-            body["systemInstruction"] = {**sys_inst, "parts": parts}
-        else:
-            body["systemInstruction"] = {"parts": [hint_part]}
-        return body
-
-    @staticmethod
-    def _find_failed_function_call(response_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-        for candidate in response_data.get("candidates", []):
-            for part in candidate.get("content", {}).get("parts", []):
-                fc = part.get("functionCall")
-                if isinstance(fc, dict) and not fc.get("args"):
-                    return fc
-        return None
-
-    @staticmethod
-    def _patch_function_call_args(
-        response_data: Dict[str, Any], function_name: str, args: Dict[str, Any]
-    ) -> None:
-        for candidate in response_data.get("candidates", []):
-            for part in candidate.get("content", {}).get("parts", []):
-                fc = part.get("functionCall")
-                if isinstance(fc, dict) and fc.get("name") == function_name and not fc.get("args"):
-                    fc["args"] = args
-                    return
-
-    async def _extract_args_as_json(
-        self,
-        original_body: Dict[str, Any],
-        function_name: str,
-        stream_path: str,
-        headers: Dict[str, str],
-        params: Dict[str, str],
-    ) -> Optional[Dict[str, Any]]:
-        """构造聚焦请求：只含工具说明 + 参数 schema + 对话上下文，让模型输出 JSON 参数。"""
-        # 找到目标工具的完整声明
-        func_desc = ""
-        func_params_schema: Dict[str, Any] = {}
-        for tool in original_body.get("tools", []):
-            for fd in tool.get("functionDeclarations", []):
-                if fd.get("name") == function_name:
-                    func_desc = fd.get("description", "")
-                    func_params_schema = fd.get("parameters", {})
-                    break
-
-        # 构造聚焦的 system instruction，只包含工具说明，过滤掉原有 system
-        tool_system = (
-            f"你是一个参数提取助手。用户正在使用工具 `{function_name}`。\n"
-            f"工具说明：{func_desc}\n"
-            f"参数 schema：{json.dumps(func_params_schema, ensure_ascii=False)}\n"
-            f"根据对话内容，只输出调用该工具所需的 JSON 参数对象，不要包含任何其他文字。"
-        )
-
-        # 只保留对话上下文（user/model 轮次），不传原 system
-        contents = list(original_body.get("contents", []))
-
-        gen_cfg = dict(original_body.get("generationConfig") or {})
-        gen_cfg["responseMimeType"] = "application/json"
-
-        extract_body: Dict[str, Any] = {
-            "contents": contents,
-            "systemInstruction": {"parts": [{"text": tool_system}]},
-            "generationConfig": gen_cfg,
-            # 不传 tools，避免模型再次发出空的 functionCall
-        }
-
-        try:
-            async with self._request(
-                "POST",
-                self._build_url(stream_path),
-                json=extract_body,
-                headers=headers,
-                params=params,
-            ) as resp:
-                if resp.status != 200:
-                    return None
-                text_parts: List[str] = []
-                async for _event, data in self._iter_sse_events(resp):
-                    if not data:
-                        continue
-                    try:
-                        chunk = json.loads(data)
-                        for cand in chunk.get("candidates", []):
-                            for part in cand.get("content", {}).get("parts", []):
-                                if isinstance(part.get("text"), str):
-                                    text_parts.append(part["text"])
-                    except Exception:
-                        continue
-                text = "".join(text_parts).strip()
-                if not text:
-                    return None
-                if text.startswith("```"):
-                    lines = text.splitlines()
-                    text = "\n".join(lines[1:-1] if lines[-1].strip() == "```" else lines[1:])
-                result = json.loads(text)
-                return result if isinstance(result, dict) else None
-        except Exception:
-            return None
 
 
 class OpenAIResponsesHandler(ProviderHandler):
@@ -1184,6 +533,10 @@ class OpenAIResponsesHandler(ProviderHandler):
         headers = self._forward_headers(req)
         if body.get("stream"):
             return await self._proxy_stream(req, sub_path, body, headers)
+
+        # 假非流禁用时直通
+        if not self.pseudo_non_stream:
+            return await self._passthrough(req, sub_path)
 
         body["stream"] = True
         async with self._request(
@@ -1250,8 +603,9 @@ class ProviderRoute:
         session: Optional[ClientSession] = None,
         debug: bool = False,
         request_timeout: float = 120.0,
-        gemini_fix_retries: int = 2,
+        pseudo_non_stream: bool = True,
         extract_args: bool = False,
+        fix_retries: int = 1,
     ):
         self.route_name = route_name
         self.target_url = target_url.rstrip("/")
@@ -1271,7 +625,9 @@ class ProviderRoute:
                 session=session,
                 debug=self.debug,
                 request_timeout=request_timeout,
+                pseudo_non_stream=pseudo_non_stream,
                 extract_args=extract_args,
+                fix_retries=fix_retries,
             ),
             ClaudeHandler(
                 self.target_url,
@@ -1279,7 +635,9 @@ class ProviderRoute:
                 session=session,
                 debug=self.debug,
                 request_timeout=request_timeout,
+                pseudo_non_stream=pseudo_non_stream,
                 extract_args=extract_args,
+                fix_retries=fix_retries,
             ),
             GeminiHandler(
                 self.target_url,
@@ -1287,8 +645,9 @@ class ProviderRoute:
                 session=session,
                 debug=self.debug,
                 request_timeout=request_timeout,
-                gemini_fix_retries=gemini_fix_retries,
+                pseudo_non_stream=pseudo_non_stream,
                 extract_args=extract_args,
+                fix_retries=fix_retries,
             ),
             OpenAIResponsesHandler(
                 self.target_url,
@@ -1296,6 +655,7 @@ class ProviderRoute:
                 session=session,
                 debug=self.debug,
                 request_timeout=request_timeout,
+                pseudo_non_stream=pseudo_non_stream,
             ),
         ]
 
@@ -1314,15 +674,17 @@ class StreamifyProxy:
         providers: Optional[List[Dict[str, Any]]] = None,
         debug: bool = False,
         request_timeout: float = 120.0,
-        gemini_fix_retries: int = 2,
+        pseudo_non_stream: bool = True,
         extract_args: bool = False,
+        fix_retries: int = 1,
     ):
         self.port = port
         self.providers_config = providers or []
         self.debug = bool(debug)
         self.request_timeout = ProviderHandler._normalize_timeout(request_timeout)
-        self.gemini_fix_retries = max(0, int(gemini_fix_retries))
+        self.pseudo_non_stream = bool(pseudo_non_stream)
         self.extract_args = bool(extract_args)
+        self.fix_retries = max(0, int(fix_retries))
         self.providers: Dict[str, ProviderRoute] = {}
         self.session: Optional[ClientSession] = None
         self._debug_log_path = pathlib.Path(__file__).parent / "debug_requests.log"
@@ -1367,8 +729,9 @@ class StreamifyProxy:
                 session=self.session,
                 debug=self.debug,
                 request_timeout=self.request_timeout,
-                gemini_fix_retries=self.gemini_fix_retries,
+                pseudo_non_stream=self.pseudo_non_stream,
                 extract_args=self.extract_args,
+                fix_retries=self.fix_retries,
             )
 
     async def _dispatch(self, req: web.Request) -> web.Response:
@@ -1450,7 +813,10 @@ class StreamifyProxy:
                         resp_detail = "<streaming response>"
                     ts = time.strftime("%Y-%m-%d %H:%M:%S")
                     with open(self._debug_log_path, "a", encoding="utf-8") as _f:
-                        _f.write(f"[{ts}] <<< {req.method.upper()} {path_text} status={response.status} elapsed={elapsed_ms}ms\n")
+                        _f.write(
+                            f"[{ts}] <<< {req.method.upper()} {path_text} "
+                            f"status={response.status} elapsed={elapsed_ms}ms\n"
+                        )
                         _f.write(resp_detail + "\n\n")
                 except Exception as _exc:
                     logger.warning("Streamify debug: 写入响应日志失败: %s", _exc)
