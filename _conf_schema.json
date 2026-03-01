@@ -24,19 +24,10 @@
     "hint": "全局连接/读取超时，防止上游连接永久挂起"
   },
   "tool_error_patterns": {
-    "description": "工具错误识别正则列表",
+    "description": "额外的工具错误识别正则",
     "type": "list",
-    "default": [
-      "(?i)^error:",
-      "(?i)parameter mismatch",
-      "(?i)missing \\d+ required",
-      "(?i)missing required positional argument",
-      "不能.*为空",
-      "(?i)cannot be empty",
-      "(?i)must not be empty",
-      "(?i)\\bempty\\b"
-    ],
-    "hint": "用于识别工具执行结果为错误的正则表达式列表；匹配任一即触发 Layer 2 修复；留空则使用内置默认规则"
+    "default": [],
+    "hint": "自定义正则表达式列表，会追加到内置默认规则上（不会覆盖）；匹配任一即触发 Layer 2 修复"
   },
   "fix_retries": {
     "description": "最多重试次数",
