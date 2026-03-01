@@ -654,6 +654,8 @@ class GeminiHandler(ProviderHandler, GeminiFakeNonStream, GeminiFCEnhance):
         # Layer 1 (Proactive): 对照 schema 提取参数
         if self.extract_args:
             failed_fc = self._find_failed_function_call(response_data, tools)
+            if failed_fc is None and self._hint_tools:
+                failed_fc = self._find_hinted_empty_fc(response_data)
             if failed_fc is not None:
                 extracted = await self._extract_args_as_json(
                     clean_body, failed_fc.get("name", ""), stream_path, headers, params
@@ -718,6 +720,24 @@ class GeminiHandler(ProviderHandler, GeminiFakeNonStream, GeminiFCEnhance):
                 has_failed = self._find_hinted_empty_fc(response_data) is not None
             if not has_failed:
                 return web.json_response(response_data)
+            if self.extract_args:
+                retry_failed_fc = self._find_failed_function_call(response_data, tools)
+                if retry_failed_fc is None and self._hint_tools:
+                    retry_failed_fc = self._find_hinted_empty_fc(response_data)
+                if retry_failed_fc is not None:
+                    extracted = await self._extract_args_as_json(
+                        clean_body, retry_failed_fc.get("name", ""), stream_path, headers, params
+                    )
+                    if extracted is not None:
+                        self._patch_function_call_args(
+                            response_data, retry_failed_fc.get("name", ""), extracted
+                        )
+                        if self.debug:
+                            logger.info(
+                                "Streamify [Layer1]: 成功提取 Gemini 工具 %s 的参数: %s",
+                                retry_failed_fc.get("name"), extracted,
+                            )
+                        return web.json_response(response_data)
 
         failed_fc = self._find_failed_function_call(response_data, tools)
         if failed_fc is None and self._hint_tools:
