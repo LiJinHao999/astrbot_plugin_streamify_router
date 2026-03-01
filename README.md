@@ -23,7 +23,7 @@ Tool `astrbot_execute_shell` Result: error: Tool handler parameter mismatch,
 
 通常是http://127.0.0.1:23456/yourendpoint (保存插件设置后，你应该填写的url示例会自动显示在设置项中)
 
-**如果还有什么难以处理的神秘问题，欢迎提issue讨论，作者看见会回复ovo**
+**如果还有什么难以处理的神秘问题，欢迎提issue讨论，作者看见会回复和讨论的ovo**
 
 ## 处理思路介绍
 
