@@ -598,9 +598,20 @@ class GeminiHandler(ProviderHandler, GeminiFakeNonStream, GeminiFCEnhance):
                             tool_name, extracted,
                         )
                     self._remember_hint_tool(tool_name)
-                    return web.json_response(
-                        self._build_corrected_tool_response(tool_name, extracted)
+                    # 不返回合成响应（缺 thoughtSignature 会导致后续请求 400），
+                    # 而是把提取到的参数注入上下文，让模型自己生成带签名的 function call
+                    args_hint = (
+                        f"IMPORTANT: You MUST call the tool `{tool_name}` with exactly "
+                        f"these arguments:\n{json.dumps(extracted, ensure_ascii=False)}"
                     )
+                    clean_body = {**body, "contents": ctx_contents}
+                    sys_inst = clean_body.get("systemInstruction")
+                    if isinstance(sys_inst, dict):
+                        parts = list(sys_inst.get("parts", []))
+                        parts.append({"text": args_hint})
+                        clean_body["systemInstruction"] = {**sys_inst, "parts": parts}
+                    else:
+                        clean_body["systemInstruction"] = {"parts": [{"text": args_hint}]}
                 elif self.debug:
                     logger.info(
                         "Streamify [Layer2]: Gemini 工具 %s 参数提取失败，继续正常转发",
@@ -670,6 +681,12 @@ class GeminiHandler(ProviderHandler, GeminiFakeNonStream, GeminiFCEnhance):
                     attempt + 1, self.fix_retries,
                 )
             current_body = self._inject_hint(clean_body, retry_tool_name)
+            if self.debug:
+                injected_sys = current_body.get("systemInstruction")
+                logger.info(
+                    "Streamify debug: 注入后的 systemInstruction: %s",
+                    json.dumps(injected_sys, ensure_ascii=False)[:500] if injected_sys else "(空)",
+                )
             async with self._request(
                 "POST",
                 self._build_url(stream_path),
