@@ -29,39 +29,6 @@ Tool `astrbot_execute_shell` Result: error: Tool handler parameter mismatch,
 
 **如果还有什么难以处理的神秘问题，欢迎提issue讨论，作者看见会回复和讨论的ovo**
 
-## 处理思路介绍
-
-### 无感修复 Function Calling 报错 & 提示词注入修复
-
-**Layer1 : 预处理&记忆拦截**
-
-由于插件属于网关层，网关层收到消息将会在astrbot之前，可以提前拦截，但网关无法自行判断工具调用是否是错误的
-
-因此，Layer1根据：tool中是否有必填的参数项没填(required)与插件缓存记忆中的tool是否会因为没填参数项报错来提前拦截&重试，扼杀出现错误的可能性。
-
-**Layer2 : 根据astrbot响应中是否有报错响应来进行重试，关键词正则匹配(如不能.*为空、error:、(?i)missing \d+ required).可以在配置项中自行设置。**
-
-提示词注入修复：发送一条含有用户消息、llm试图使用的工具、这个工具的介绍和参数介绍的消息(仅包含报错工具，最小化上下文处理)，然后解析这条简单消息的响应
-
-**Layer3 : 如果重试、提示词调用都失败，注入一条工具调用失败的消息，遵从事实，防止模型产生莫名其妙的幻觉**
-
-### 伪装非流
-
-网关接收到非流请求，但在内部将非流请求转为流式请求，拼接响应后返回(假非流)，即可防止部分包装了cloudflare的中转因非流请求在2min内无响应，而超时自动关闭(429)
-
-原本就是流式请求时,透传 SSE 流
-
-### 特性支持
-
-- 多提供商路由：通过 `providers` 列表配置多个转发目标。
-- 路径分发：按 `/{route_name}/...` 区分不同目标。
-- 自动识别 API 格式（无需 `provider_type`）：
-  - OpenAI Chat Completions: `/v1/chat/completions`
-  - Claude Messages: `/v1/messages`
-  - Gemini Generate Content: `:generateContent` / `:streamGenerateContent`
-  - OpenAI Responses: `/v1/responses`
-- 每个路由可独立配置 `proxy_url`，是否开启假非流转发
-- 可选调试日志：开启后输出每次请求的处理状态与耗时。
 
 ## 使用方式
 
@@ -90,3 +57,37 @@ Tool `astrbot_execute_shell` Result: error: Tool handler parameter mismatch,
 | `providers[].forward_url` | 生成的本地转发 URL（自动生成） | `""` |
 | `providers[].proxy_url` | HTTP 代理 URL（可选） | `""` |
 | `providers[].pseudo_non_stream` | 路由级别假非流覆盖 | `true` |
+
+## 处理思路介绍
+
+### 无感修复 Function Calling 报错 & 提示词注入修复
+
+**Layer1 : 预处理&记忆拦截**
+
+由于插件属于网关层，网关层收到消息将会在astrbot之前，可以提前拦截，但网关无法自行判断工具调用是否是错误的
+
+因此，Layer1根据：tool中是否有必填的参数项没填(required)与插件缓存记忆中的tool是否会因为没填参数项报错来提前拦截&重试，扼杀出现错误的可能性。
+
+**Layer2 : 根据astrbot响应中是否有报错响应来进行重试，关键词正则匹配(如不能.*为空、error:、(?i)missing \d+ required).可以在配置项中自行设置。**
+
+提示词注入修复：发送一条含有用户消息、llm试图使用的工具、这个工具的介绍和参数介绍的消息(仅包含报错工具，最小化上下文处理)，然后解析这条简单消息的响应
+
+**Layer3 : 如果重试、提示词调用都失败，注入一条工具调用失败的消息，遵从事实，防止模型产生莫名其妙的幻觉**
+
+### 伪装非流
+
+网关接收到非流请求，但在内部将非流请求转为流式请求，拼接响应后返回(假非流)，即可防止部分包装了cloudflare的中转因非流请求在2min内无响应，而超时自动关闭(429)
+
+原本就是流式请求时,透传 SSE 流
+
+### 特性
+
+- 多提供商路由：通过 `providers` 列表配置多个转发目标。
+- 路径分发：按 `/{route_name}/...` 区分不同目标。
+- 自动识别 API 格式（无需 `provider_type`）：
+  - OpenAI Chat Completions: `/v1/chat/completions`
+  - Claude Messages: `/v1/messages`
+  - Gemini Generate Content: `:generateContent` / `:streamGenerateContent`
+  - OpenAI Responses: `/v1/responses`
+- 每个路由可独立配置 `proxy_url`，是否开启假非流转发
+- 可选调试日志：开启后输出每次请求的处理状态与耗时。
