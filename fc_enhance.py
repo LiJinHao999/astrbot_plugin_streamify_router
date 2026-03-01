@@ -85,7 +85,13 @@ class OpenAIFCEnhance:
         messages = body.get("messages", [])
         for i in range(len(messages) - 1, -1, -1):
             msg = messages[i]
-            if not isinstance(msg, dict) or msg.get("role") != "tool":
+            if not isinstance(msg, dict):
+                break
+            role = msg.get("role")
+            # 遇到 assistant 消息即停止，只检查最近一轮的 tool 结果
+            if role == "assistant":
+                break
+            if role != "tool":
                 continue
             content = msg.get("content", "")
             if not isinstance(content, str) or not _is_tool_execution_error(content, self._error_patterns):  # type: ignore[attr-defined]
@@ -268,7 +274,13 @@ class ClaudeFCEnhance:
         messages = body.get("messages", [])
         for i in range(len(messages) - 1, -1, -1):
             msg = messages[i]
-            if not isinstance(msg, dict) or msg.get("role") != "user":
+            if not isinstance(msg, dict):
+                break
+            role = msg.get("role")
+            # 遇到 assistant 消息即停止，只检查最近一轮的 tool 结果
+            if role == "assistant":
+                break
+            if role != "user":
                 continue
             content = msg.get("content", [])
             if not isinstance(content, list):
@@ -466,7 +478,13 @@ class GeminiFCEnhance:
         contents = body.get("contents", [])
         for i in range(len(contents) - 1, -1, -1):
             item = contents[i]
-            if not isinstance(item, dict) or item.get("role") != "user":
+            if not isinstance(item, dict):
+                break
+            role = item.get("role")
+            # 遇到 model 消息即停止，只检查最近一轮的 tool 结果
+            if role == "model":
+                break
+            if role != "user":
                 continue
             parts = item.get("parts", [])
             if not isinstance(parts, list):
