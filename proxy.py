@@ -612,13 +612,14 @@ class GeminiHandler(ProviderHandler, GeminiFakeNonStream, GeminiFCEnhance):
                         clean_body["systemInstruction"] = {**sys_inst, "parts": parts}
                     else:
                         clean_body["systemInstruction"] = {"parts": [{"text": args_hint}]}
-                elif self.debug:
-                    logger.info(
-                        "Streamify [Layer2]: Gemini 工具 %s 参数提取失败，继续正常转发",
-                        tool_name,
-                    )
-                # 无论提取是否成功，只要检测到错误就清理 body
-                clean_body = {**body, "contents": ctx_contents}
+                else:
+                    if self.debug:
+                        logger.info(
+                            "Streamify [Layer2]: Gemini 工具 %s 参数提取失败，继续正常转发",
+                            tool_name,
+                        )
+                    # 提取失败时仅清理 contents（不覆盖已注入 args_hint 的 clean_body）
+                    clean_body = {**body, "contents": ctx_contents}
 
         tools = clean_body.get("tools", [])
 
@@ -682,11 +683,21 @@ class GeminiHandler(ProviderHandler, GeminiFakeNonStream, GeminiFCEnhance):
                 )
             current_body = self._inject_hint(clean_body, retry_tool_name)
             if self.debug:
-                injected_sys = current_body.get("systemInstruction")
+                schema = self._extract_tool_schema(clean_body.get("tools", []), retry_tool_name)
                 logger.info(
-                    "Streamify debug: 注入后的 systemInstruction: %s",
-                    json.dumps(injected_sys, ensure_ascii=False)[:500] if injected_sys else "(空)",
+                    "Streamify debug: retry_tool_name=%r, schema_found=%s",
+                    retry_tool_name, schema is not None,
                 )
+                injected_sys = current_body.get("systemInstruction")
+                if injected_sys:
+                    parts = injected_sys.get("parts", [])
+                    # 只打印最后一个 part（即注入的 hint）
+                    if parts:
+                        hint_text = parts[-1].get("text", "")
+                        logger.info(
+                            "Streamify debug: 注入的 hint (%d chars): %s",
+                            len(hint_text), hint_text[:1000],
+                        )
             async with self._request(
                 "POST",
                 self._build_url(stream_path),
