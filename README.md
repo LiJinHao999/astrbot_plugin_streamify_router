@@ -2,20 +2,24 @@
 
 Astrbot 无感稳流网关（AstrBot 插件）。
 
+## 常见问题
+
 如果你有遇到以下问题:
 
-1、gemini function calling(尤其是gemini3.0模型) / 其它模型 fuction calling 工具调用失败或参数空回
-'''
+1. gemini function calling(尤其是gemini3.0模型) / 其它模型 fuction calling 工具调用失败或参数空回
+
+```bash
 Tool `astrbot_execute_shell` Result: error: Tool handler parameter mismatch,          
   please check the handler definition. Handler parameters: command: str, background: bool = False, env: dict = {} 
-'''
+```
 
-2、在使用插件的过程中，超过两分钟时自动超时、截断，上游返回429并超时……
-'''
+2. 在使用插件的过程中，超过两分钟时自动超时、截断，上游返回429并超时……
+
+```bash
 'NoneType' object has no attribute 'get'  或 LLM 响应错误: All chat models failed: Exception: 请求失败, 返回的 candidates 为空
 
 上游429超时，无法自动重试
-'''
+```
 
 插件将在本地启动一个转发修复端口来解决这类出于模型问题/上游问题所产生的兼容性问题
 
@@ -29,16 +33,17 @@ Tool `astrbot_execute_shell` Result: error: Tool handler parameter mismatch,
 
 ### 无感修复 Function Calling 报错 & 提示词注入修复
 
-Layer1 : 预处理&记忆拦截
+**Layer1 : 预处理&记忆拦截**
+
 由于插件属于网关层，网关层收到消息将会在astrbot之前，可以提前拦截，但网关无法自行判断工具调用是否是错误的
 
 因此，Layer1根据：tool中是否有必填的参数项没填(required)与插件缓存记忆中的tool是否会因为没填参数项报错来提前拦截&重试，扼杀出现错误的可能性。
 
-Layer2 : 根据astrbot响应中是否有报错响应来进行重试，关键词正则匹配(如不能.*为空、error:、(?i)missing \d+ required).可以在配置项中自行设置。
+**Layer2 : 根据astrbot响应中是否有报错响应来进行重试，关键词正则匹配(如不能.*为空、error:、(?i)missing \d+ required).可以在配置项中自行设置。**
 
 提示词注入修复：发送一条含有用户消息、llm试图使用的工具、这个工具的介绍和参数介绍的消息(仅包含报错工具，最小化上下文处理)，然后解析这条简单消息的响应
 
-Layer3 : 如果重试、提示词调用都失败，注入一条工具调用失败的消息，遵从事实，防止模型产生莫名其妙的幻觉
+**Layer3 : 如果重试、提示词调用都失败，注入一条工具调用失败的消息，遵从事实，防止模型产生莫名其妙的幻觉**
 
 ### 伪装非流
 
