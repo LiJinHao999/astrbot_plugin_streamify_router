@@ -974,13 +974,7 @@ class GeminiFCEnhance:
             contents_override if contents_override is not None
             else original_body.get("contents", [])
         )
-        _raw_len = len(source_contents)
-        source_contents = _trim_contents_by_turns(source_contents, self.fc_context_turns)  # type: ignore[attr-defined]
-        if len(source_contents) != _raw_len:
-            logger.info(
-                "Streamify [extract]: trim %d -> %d (turns=%s)",
-                _raw_len, len(source_contents), getattr(self, 'fc_context_turns', '?'),
-            )
+        # 提取侧请求不做 trim：需要完整对话来收集 FC/FR 历史和原始用户文本
 
         # 收集同名工具的历史调用参数和结果
         func_resp_map: Dict[str, List[str]] = {}
