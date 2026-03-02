@@ -1143,7 +1143,17 @@ class GeminiFCEnhance:
                     text = "\n".join(
                         lines[1:-1] if lines[-1].strip() == "```" else lines[1:]
                     )
-                parsed = json.loads(text)
+                # 先尝试直接解析，失败则提取最外层 {...}
+                try:
+                    parsed = json.loads(text)
+                except json.JSONDecodeError:
+                    start = text.find("{")
+                    end = text.rfind("}")
+                    if start != -1 and end > start:
+                        parsed = json.loads(text[start:end + 1])
+                    else:
+                        logger.warning("Streamify [extract]: 工具 %s 响应中无 JSON 对象", function_name)
+                        return None
                 if isinstance(parsed, dict) and parsed:
                     logger.info(
                         "Streamify [extract]: 工具 %s 提取成功: %s",
