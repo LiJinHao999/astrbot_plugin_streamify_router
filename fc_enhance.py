@@ -65,9 +65,17 @@ _EXTRACT_PROMPT_TEMPLATE = (
 
 
 def _strip_system_tags(text: str) -> str:
-    """去除 <system_reminder> 和 <conversation_scene> 标签及其内容。"""
+    """去除 <system_reminder>；从 <conversation_scene> 中仅提取 <content> 的值，无 <content> 则保留原文。"""
     text = re.sub(r'<system_reminder>.*?</system_reminder>', '', text, flags=re.DOTALL)
-    text = re.sub(r'<conversation_scene>.*?</conversation_scene>', '', text, flags=re.DOTALL)
+
+    def _extract_content(m: re.Match) -> str:
+        inner = m.group(1)
+        cm = re.search(r'<content>(.*?)</content>', inner, re.DOTALL)
+        if cm:
+            return cm.group(1).strip()
+        return m.group(0)  # 无 <content> 标签，保留原文
+
+    text = re.sub(r'<conversation_scene>(.*?)</conversation_scene>', _extract_content, text, flags=re.DOTALL)
     return text
 
 
@@ -271,20 +279,42 @@ class OpenAIFCEnhance:
         source_messages = _trim_messages_by_turns(source_messages, self.fc_context_turns)  # type: ignore[attr-defined]
         messages = [{"role": "system", "content": tool_system}]
         for msg in source_messages:
-            if isinstance(msg, dict) and msg.get("role") != "system":
-                if msg.get("role") == "user":
-                    content = msg.get("content", "")
-                    if isinstance(content, str):
-                        msg = {**msg, "content": _strip_system_tags(content)}
-                    elif isinstance(content, list):
-                        new_parts = []
-                        for part in content:
-                            if isinstance(part, dict) and part.get("type") == "text" and isinstance(part.get("text"), str):
-                                new_parts.append({**part, "text": _strip_system_tags(part["text"])})
-                            else:
-                                new_parts.append(part)
-                        msg = {**msg, "content": new_parts}
-                messages.append(msg)
+            if not isinstance(msg, dict):
+                continue
+            role = msg.get("role")
+            if role == "system":
+                continue
+            # 跳过工具执行结果消息
+            if role == "tool":
+                continue
+            if role == "user":
+                content = msg.get("content", "")
+                if isinstance(content, str):
+                    cleaned = _strip_system_tags(content)
+                    if not cleaned.strip():
+                        continue
+                    msg = {**msg, "content": cleaned}
+                elif isinstance(content, list):
+                    new_parts = []
+                    for part in content:
+                        if isinstance(part, dict) and part.get("type") == "text" and isinstance(part.get("text"), str):
+                            cleaned = _strip_system_tags(part["text"])
+                            if cleaned.strip():
+                                new_parts.append({**part, "text": cleaned})
+                        else:
+                            new_parts.append(part)
+                    if not new_parts:
+                        continue
+                    msg = {**msg, "content": new_parts}
+            elif role == "assistant":
+                # 去除 tool_calls / function_call，只保留文本内容
+                cleaned_msg: Dict[str, Any] = {k: v for k, v in msg.items()
+                                                if k not in ("tool_calls", "function_call")}
+                content = cleaned_msg.get("content")
+                if not content and not cleaned_msg.get("refusal"):
+                    continue
+                msg = cleaned_msg
+            messages.append(msg)
 
         extract_body: Dict[str, Any] = {
             "model": original_body.get("model", ""),
@@ -536,18 +566,41 @@ class ClaudeFCEnhance:
         for msg in source_messages:
             if not isinstance(msg, dict):
                 continue
-            if msg.get("role") == "user":
+            role = msg.get("role")
+            if role == "user":
                 content = msg.get("content", "")
                 if isinstance(content, str):
-                    msg = {**msg, "content": _strip_system_tags(content)}
+                    cleaned = _strip_system_tags(content)
+                    if not cleaned.strip():
+                        continue
+                    msg = {**msg, "content": cleaned}
                 elif isinstance(content, list):
                     new_parts = []
                     for part in content:
-                        if isinstance(part, dict) and part.get("type") == "text" and isinstance(part.get("text"), str):
-                            new_parts.append({**part, "text": _strip_system_tags(part["text"])})
+                        if not isinstance(part, dict):
+                            continue
+                        # 跳过 tool_result（工具执行结果）
+                        if part.get("type") == "tool_result":
+                            continue
+                        if part.get("type") == "text" and isinstance(part.get("text"), str):
+                            cleaned = _strip_system_tags(part["text"])
+                            if cleaned.strip():
+                                new_parts.append({**part, "text": cleaned})
                         else:
                             new_parts.append(part)
+                    if not new_parts:
+                        continue
                     msg = {**msg, "content": new_parts}
+            elif role == "assistant":
+                content = msg.get("content", [])
+                if isinstance(content, list):
+                    # 只保留 text 类型的 block，去除 tool_use
+                    text_blocks = [b for b in content
+                                   if isinstance(b, dict) and b.get("type") == "text"
+                                   and b.get("text", "").strip()]
+                    if not text_blocks:
+                        continue
+                    msg = {**msg, "content": text_blocks}
             cleaned_messages.append(msg)
         extract_body: Dict[str, Any] = {
             "model": original_body.get("model", ""),
@@ -785,14 +838,38 @@ class GeminiFCEnhance:
         contents = _trim_contents_by_turns(contents, self.fc_context_turns)  # type: ignore[attr-defined]
         cleaned_contents: List[Dict[str, Any]] = []
         for item in contents:
-            if isinstance(item, dict) and item.get("role") == "user":
+            if not isinstance(item, dict):
+                continue
+            role = item.get("role")
+            if role == "user":
                 new_parts = []
                 for part in item.get("parts", []):
-                    if isinstance(part, dict) and isinstance(part.get("text"), str):
-                        new_parts.append({**part, "text": _strip_system_tags(part["text"])})
+                    if not isinstance(part, dict):
+                        continue
+                    # 跳过 functionResponse（工具执行结果）
+                    if "functionResponse" in part:
+                        continue
+                    if isinstance(part.get("text"), str):
+                        cleaned = _strip_system_tags(part["text"])
+                        if cleaned.strip():
+                            new_parts.append({**part, "text": cleaned})
                     else:
                         new_parts.append(part)
-                cleaned_contents.append({**item, "parts": new_parts})
+                if new_parts:
+                    cleaned_contents.append({**item, "parts": new_parts})
+            elif role == "model":
+                new_parts = []
+                for part in item.get("parts", []):
+                    if not isinstance(part, dict):
+                        continue
+                    # 跳过 functionCall（工具调用请求）
+                    if "functionCall" in part:
+                        continue
+                    # 保留有实际文本的 part
+                    if isinstance(part.get("text"), str) and part["text"].strip():
+                        new_parts.append(part)
+                if new_parts:
+                    cleaned_contents.append({**item, "parts": new_parts})
             else:
                 cleaned_contents.append(item)
 
@@ -1032,17 +1109,30 @@ class OpenAIResponsesFCEnhance:
             source_input = _trim_messages_by_turns(source_input, self.fc_context_turns, user_role="user")  # type: ignore[attr-defined]
             cleaned_input: List[Dict[str, Any]] = []
             for item in source_input:
-                if isinstance(item, dict) and item.get("role") == "user":
+                if not isinstance(item, dict):
+                    continue
+                item_type = item.get("type", "")
+                # 跳过 function_call 和 function_call_output（工具调用及结果）
+                if item_type in ("function_call", "function_call_output"):
+                    continue
+                if item.get("role") == "user":
                     content = item.get("content", "")
                     if isinstance(content, str):
-                        item = {**item, "content": _strip_system_tags(content)}
+                        cleaned = _strip_system_tags(content)
+                        if not cleaned.strip():
+                            continue
+                        item = {**item, "content": cleaned}
                     elif isinstance(content, list):
                         new_parts = []
                         for part in content:
                             if isinstance(part, dict) and part.get("type") == "input_text" and isinstance(part.get("text"), str):
-                                new_parts.append({**part, "text": _strip_system_tags(part["text"])})
+                                cleaned = _strip_system_tags(part["text"])
+                                if cleaned.strip():
+                                    new_parts.append({**part, "text": cleaned})
                             else:
                                 new_parts.append(part)
+                        if not new_parts:
+                            continue
                         item = {**item, "content": new_parts}
                 cleaned_input.append(item)
             source_input = cleaned_input
