@@ -1136,13 +1136,28 @@ class GeminiFCEnhance:
             body["systemInstruction"] = {**sys_inst, "parts": parts}
         else:
             body["systemInstruction"] = {"parts": [hint_part]}
-        # 2) contents 末尾追加 user 消息，强化引导
+        # 2) contents 中追加引导，合并到末尾 user 消息避免连续 user 角色
         if tool_name:
-            user_hint = (
-                f"请立即调用工具 `{tool_name}`，并填写所有必填参数，不要留空。"
-            )
+            schema_for_hint = GeminiFCEnhance._extract_tool_schema(body.get("tools", []), tool_name)
+            required = (schema_for_hint or {}).get("required", [])
+            if required:
+                params_list = "、".join(f"`{p}`" for p in required)
+                user_hint = (
+                    f"请根据上述对话内容，立即调用工具 `{tool_name}`。"
+                    f"必填参数为 {params_list}，请从对话中推断每个参数的具体值，不要留空。"
+                )
+            else:
+                user_hint = (
+                    f"请根据上述对话内容，立即调用工具 `{tool_name}`，"
+                    f"并为所有参数提供合理的值，不要使用空对象 {{}} 调用。"
+                )
             contents = list(body.get("contents", []))
-            contents.append({"role": "user", "parts": [{"text": user_hint}]})
+            if contents and isinstance(contents[-1], dict) and contents[-1].get("role") == "user":
+                last = dict(contents[-1])
+                last["parts"] = list(last.get("parts", [])) + [{"text": user_hint}]
+                contents[-1] = last
+            else:
+                contents.append({"role": "user", "parts": [{"text": user_hint}]})
             body["contents"] = contents
         return body
 
