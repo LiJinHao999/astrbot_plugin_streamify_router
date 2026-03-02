@@ -354,7 +354,7 @@ class OpenAIFCEnhance:
         tool_history_section = ""
         if history_entries:
             tool_history_section = (
-                "以下是该工具之前的调用历史（参数和结果），请严格避免重复使用过去的参数，探索更多可能性：\n"
+                "以下是该工具之前的调用历史（参数和结果），请严格避免重复使用过去的参数，探索更多可能性(如更换关键词，将中文换为英文等)：\n"
                 + "\n".join(history_entries) + "\n"
             )
 
@@ -682,7 +682,7 @@ class ClaudeFCEnhance:
         tool_history_section = ""
         if history_entries:
             tool_history_section = (
-                "以下是该工具之前的调用历史（参数和结果），请严格避免重复使用过去的参数，探索更多可能性：\n"
+                "以下是该工具之前的调用历史（参数和结果），请严格避免重复使用过去的参数，探索更多可能性(如更换关键词，将中文换为英文等)：\n"
                 + "\n".join(history_entries) + "\n"
             )
 
@@ -1019,7 +1019,7 @@ class GeminiFCEnhance:
         tool_history_section = ""
         if history_entries:
             tool_history_section = (
-                "以下是该工具之前的调用历史（参数和结果），请严格避免重复使用过去的参数，探索更多可能性：\n"
+                "以下是该工具之前的调用历史（参数和结果），请严格避免重复使用过去的参数，探索更多可能性(如更换关键词，将中文换为英文等)：\n"
                 + "\n".join(history_entries) + "\n"
             )
 
@@ -1335,7 +1335,7 @@ class OpenAIResponsesFCEnhance:
             tool_history_section = ""
             if history_entries:
                 tool_history_section = (
-                    "以下是该工具之前的调用历史（参数和结果），请严格避免重复使用过去的参数，探索更多可能性：\n"
+                    "以下是该工具之前的调用历史（参数和结果），请严格避免重复使用过去的参数，探索更多可能性(如更换关键词，将中文换为英文等)：\n"
                     + "\n".join(history_entries) + "\n"
                 )
 
