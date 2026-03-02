@@ -1074,11 +1074,37 @@ class GeminiFCEnhance:
 
         self._last_extract_context = fix_contents  # type: ignore[attr-defined]
 
-        # ---- 请求：保留 tools 让模型产出 functionCall ----
+        # ---- 构建 fix 专用 systemInstruction，引导模型调用工具 ----
+        func_desc = ""
+        func_schema_dict: Dict[str, Any] = {}
+        for tool in original_body.get("tools", []):
+            for fd in tool.get("functionDeclarations", []):
+                if fd.get("name") == function_name:
+                    func_desc = fd.get("description", "")
+                    func_schema_dict = fd.get("parameters", {})
+                    break
+
+        fix_system_hint = (
+            f"你是一个工具调用助手。你必须调用工具 `{function_name}` 来完成用户的请求。\n"
+            f"工具说明：{func_desc}\n"
+            f"参数 schema：{json.dumps(func_schema_dict, ensure_ascii=False)}\n"
+            "请仔细分析对话上下文，从中推断出每个参数的具体值，然后调用该工具。\n"
+            "不要回复文本，必须直接调用工具。"
+        )
+
+        # 在原始 systemInstruction 基础上追加 fix 提示
         fix_body: Dict[str, Any] = {"contents": fix_contents}
-        for key in ("tools", "toolConfig", "systemInstruction", "safetySettings"):
+        for key in ("tools", "toolConfig", "safetySettings"):
             if key in original_body:
                 fix_body[key] = original_body[key]
+        sys_inst = original_body.get("systemInstruction")
+        if isinstance(sys_inst, dict):
+            parts = list(sys_inst.get("parts", []))
+            parts.append({"text": fix_system_hint})
+            fix_body["systemInstruction"] = {**sys_inst, "parts": parts}
+        else:
+            fix_body["systemInstruction"] = {"parts": [{"text": fix_system_hint}]}
+
         gen_cfg = dict(original_body.get("generationConfig") or {})
         gen_cfg.pop("responseMimeType", None)
         gen_cfg.pop("responseSchema", None)
