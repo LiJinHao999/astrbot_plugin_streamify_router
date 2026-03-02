@@ -316,7 +316,7 @@ class GeminiHandler(ProviderHandler, GeminiFakeNonStream, GeminiFCEnhance):
                         f"重要：你必须使用以下参数调用工具 `{tool_name}`：\n"
                         f"{json.dumps(extracted, ensure_ascii=False)}"
                     )
-                    clean_body = {**body, "contents": ctx_contents}
+                    clean_body = {**body, "contents": ctx_contents, "_full_contents": body.get("contents", [])}
                     sys_inst = clean_body.get("systemInstruction")
                     if isinstance(sys_inst, dict):
                         parts = list(sys_inst.get("parts", []))
@@ -330,7 +330,7 @@ class GeminiHandler(ProviderHandler, GeminiFakeNonStream, GeminiFCEnhance):
                             "Streamify [Layer2]: Gemini 工具 %s 参数提取失败，继续正常转发",
                             tool_name,
                         )
-                    clean_body = {**body, "contents": ctx_contents}
+                    clean_body = {**body, "contents": ctx_contents, "_full_contents": body.get("contents", [])}
 
         tools = clean_body.get("tools", [])
 

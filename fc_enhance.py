@@ -972,7 +972,7 @@ class GeminiFCEnhance:
 
         source_contents = list(
             contents_override if contents_override is not None
-            else original_body.get("contents", [])
+            else original_body.get("_full_contents", original_body.get("contents", []))
         )
         # 提取侧请求不做 trim：需要完整对话来收集 FC/FR 历史和原始用户文本
 
