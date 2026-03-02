@@ -974,7 +974,13 @@ class GeminiFCEnhance:
             contents_override if contents_override is not None
             else original_body.get("contents", [])
         )
+        _raw_len = len(source_contents)
         source_contents = _trim_contents_by_turns(source_contents, self.fc_context_turns)  # type: ignore[attr-defined]
+        if len(source_contents) != _raw_len:
+            logger.info(
+                "Streamify [extract]: trim %d -> %d (turns=%s)",
+                _raw_len, len(source_contents), getattr(self, 'fc_context_turns', '?'),
+            )
 
         # 收集同名工具的历史调用参数和结果
         func_resp_map: Dict[str, List[str]] = {}
@@ -1143,15 +1149,26 @@ class GeminiFCEnhance:
                     text = "\n".join(
                         lines[1:-1] if lines[-1].strip() == "```" else lines[1:]
                     )
-                # 先尝试直接解析，失败则提取最外层 {...}
+                # 先尝试直接解析，失败则用 raw_decode 从第一个 { 开始解析
                 try:
                     parsed = json.loads(text)
                 except json.JSONDecodeError:
-                    start = text.find("{")
-                    end = text.rfind("}")
-                    if start != -1 and end > start:
-                        parsed = json.loads(text[start:end + 1])
-                    else:
+                    parsed = None
+                    decoder = json.JSONDecoder()
+                    pos = 0
+                    while pos < len(text):
+                        idx = text.find("{", pos)
+                        if idx == -1:
+                            break
+                        try:
+                            obj, end_pos = decoder.raw_decode(text, idx)
+                            if isinstance(obj, dict) and obj:
+                                parsed = obj
+                                break
+                        except json.JSONDecodeError:
+                            pos = idx + 1
+                            continue
+                    if parsed is None:
                         logger.warning("Streamify [extract]: 工具 %s 响应中无 JSON 对象", function_name)
                         return None
                 if isinstance(parsed, dict) and parsed:
