@@ -78,7 +78,7 @@ Tool `astrbot_execute_shell` Result: error: Tool handler parameter mismatch,
 
 网关接收到非流请求，但在内部将非流请求转为流式请求，拼接响应后返回(假非流)，即可防止部分包装了cloudflare的中转因非流请求在2min内无响应，而超时自动关闭(429)
 
-原本就是流式请求时,透传 SSE 流
+原本就是流式请求时,依然修复修复 Function Calling 报错,依然传流式请求
 
 ### 特性
 
