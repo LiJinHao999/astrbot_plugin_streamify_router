@@ -158,7 +158,12 @@ class ProviderHandler:
         }
         if hint:
             entry["hint"] = hint
-        if context is not None:
+        # 优先使用 _extract_args_as_json 中保存的实际发送上下文
+        actual_ctx = getattr(self, '_last_extract_context', None)
+        if actual_ctx is not None:
+            entry["context"] = _sanitize_for_log(actual_ctx)
+            self._last_extract_context = None
+        elif context is not None:
             entry["context"] = _sanitize_for_log(context)
         _write_debug_entry(entry)
 

@@ -345,6 +345,7 @@ class OpenAIFCEnhance:
         messages: List[Dict[str, Any]] = [{"role": "system", "content": tool_system}]
         if context_lines:
             messages.append({"role": "user", "content": "\n".join(context_lines)})
+        self._last_extract_context = messages  # type: ignore[attr-defined]
 
         extract_body: Dict[str, Any] = {
             "model": original_body.get("model", ""),
@@ -642,6 +643,7 @@ class ClaudeFCEnhance:
                         continue
                     msg = {**msg, "content": text_blocks}
             cleaned_messages.append(msg)
+        self._last_extract_context = cleaned_messages  # type: ignore[attr-defined]
         extract_body: Dict[str, Any] = {
             "model": original_body.get("model", ""),
             "max_tokens": original_body.get("max_tokens", 1024),
@@ -925,6 +927,7 @@ class GeminiFCEnhance:
             else:
                 cleaned_contents.append(item)
 
+        self._last_extract_context = cleaned_contents  # type: ignore[attr-defined]
         gen_cfg = dict(original_body.get("generationConfig") or {})
         gen_cfg["responseMimeType"] = "application/json"
 
@@ -1187,6 +1190,7 @@ class OpenAIResponsesFCEnhance:
             if context_lines:
                 extract_input = "\n".join(context_lines)
 
+        self._last_extract_context = extract_input  # type: ignore[attr-defined]
         extract_body: Dict[str, Any] = {
             "model": original_body.get("model", ""),
             "instructions": tool_system,
