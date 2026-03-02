@@ -166,6 +166,8 @@ class OpenAIResponsesHandler(ProviderHandler, OpenAIResponsesFakeNonStream, Open
 
         if self.fc_enhance >= 2 and target_fc is None:
             target_fc = self._find_first_function_call(completed_data)
+            if target_fc is not None:
+                logger.info("Streamify [全部拦截]: 拦截 Responses 工具 %s，尝试重写参数(流式)", target_fc.get("name", ""))
 
         if target_fc is None:
             for line in fc_buffer:
@@ -247,6 +249,7 @@ class OpenAIResponsesHandler(ProviderHandler, OpenAIResponsesFakeNonStream, Open
             return client
         else:
             # Level 2 提取失败但原参数非空，重放原始 FC 事件
+            logger.info("Streamify [全部拦截]: 工具 %s 参数提取失败，保留原始参数(流式)", fn_name)
             for line in fc_buffer:
                 await client.write(line.encode())
             await client.write(b"data: [DONE]\n\n")
@@ -333,6 +336,8 @@ class OpenAIResponsesHandler(ProviderHandler, OpenAIResponsesFakeNonStream, Open
 
         if self.fc_enhance >= 2 and target_fc is None:
             target_fc = self._find_first_function_call(result)
+            if target_fc is not None:
+                logger.info("Streamify [全部拦截]: 拦截 Responses 工具 %s，尝试重写参数", target_fc.get("name", ""))
 
         if target_fc is None:
             return web.json_response(result)
@@ -393,5 +398,7 @@ class OpenAIResponsesHandler(ProviderHandler, OpenAIResponsesFakeNonStream, Open
             fail_name = failed_fc.get("name", "unknown") if failed_fc else "unknown"
             logger.warning("Streamify: 工具 %s 参数在 %d 次重试后仍为空", fail_name, self.fix_retries)
             _inject_fc_failure_text_responses(result, fail_name)
+        elif not is_failed:
+            logger.info("Streamify [全部拦截]: 工具 %s 参数提取失败，保留原始参数", fn_name)
 
         return web.json_response(result)

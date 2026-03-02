@@ -266,6 +266,8 @@ class ClaudeHandler(ProviderHandler, ClaudeFakeNonStream, ClaudeFCEnhance):
 
         if self.fc_enhance >= 2 and target_tc is None:
             target_tc = self._find_first_function_call(assembled)
+            if target_tc is not None:
+                logger.info("Streamify [全部拦截]: 拦截 Claude 工具 %s，尝试重写参数(流式)", target_tc.get("name", ""))
 
         start_idx = max_forwarded_idx + 1
 
@@ -341,6 +343,7 @@ class ClaudeHandler(ProviderHandler, ClaudeFakeNonStream, ClaudeFCEnhance):
             return client
         else:
             # Level 2 提取失败但原参数非空，重放原始缓冲事件
+            logger.info("Streamify [全部拦截]: 工具 %s 参数提取失败，保留原始参数(流式)", fn_name)
             for evt_name, evt_payload in tc_buffer:
                 await self._write_event(client, evt_name, evt_payload)
             await client.write_eof()
@@ -430,6 +433,8 @@ class ClaudeHandler(ProviderHandler, ClaudeFakeNonStream, ClaudeFCEnhance):
 
         if self.fc_enhance >= 2 and target_tc is None:
             target_tc = self._find_first_function_call(result)
+            if target_tc is not None:
+                logger.info("Streamify [全部拦截]: 拦截 Claude 工具 %s，尝试重写参数", target_tc.get("name", ""))
 
         if target_tc is None:
             return web.json_response(result)
@@ -514,5 +519,7 @@ class ClaudeHandler(ProviderHandler, ClaudeFakeNonStream, ClaudeFCEnhance):
             _fail_name = failed_tc.get("name", "unknown") if failed_tc else "unknown"
             logger.warning("Streamify: 工具 %s 参数在 %d 次重试后仍为空", _fail_name, self.fix_retries)
             _inject_fc_failure_text_claude(result, _fail_name)
+        elif not is_failed:
+            logger.info("Streamify [全部拦截]: 工具 %s 参数提取失败，保留原始参数", function_name)
 
         return web.json_response(result)

@@ -157,6 +157,8 @@ class GeminiHandler(ProviderHandler, GeminiFakeNonStream, GeminiFCEnhance):
 
         if self.fc_enhance >= 2 and target_fc is None:
             target_fc = self._find_first_function_call(response_data)
+            if target_fc is not None:
+                logger.info("Streamify [全部拦截]: 拦截 Gemini 工具 %s，尝试重写参数(流式)", target_fc.get("name", ""))
 
         if target_fc is None:
             # 无需修复：重放原始 FC 事件
@@ -244,6 +246,7 @@ class GeminiHandler(ProviderHandler, GeminiFakeNonStream, GeminiFCEnhance):
             return client
         else:
             # Level 2 提取失败但原参数非空，重放原始 FC 事件
+            logger.info("Streamify [全部拦截]: 工具 %s 参数提取失败，保留原始参数(流式)", fn_name)
             for payload in fc_buffer:
                 await client.write(f"data: {json.dumps(payload)}\n\n".encode())
             await client.write_eof()
@@ -369,6 +372,8 @@ class GeminiHandler(ProviderHandler, GeminiFakeNonStream, GeminiFCEnhance):
 
         if self.fc_enhance >= 2 and target_fc is None:
             target_fc = self._find_first_function_call(response_data)
+            if target_fc is not None:
+                logger.info("Streamify [全部拦截]: 拦截 Gemini 工具 %s，尝试重写参数", target_fc.get("name", ""))
 
         if target_fc is None:
             return web.json_response(response_data)
@@ -482,5 +487,7 @@ class GeminiHandler(ProviderHandler, GeminiFakeNonStream, GeminiFCEnhance):
                 fail_name, self.fix_retries,
             )
             _inject_fc_failure_text_gemini(response_data, fail_name)
+        elif not is_failed:
+            logger.info("Streamify [全部拦截]: 工具 %s 参数提取失败，保留原始参数", function_name)
 
         return web.json_response(response_data)

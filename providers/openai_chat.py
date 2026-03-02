@@ -227,6 +227,9 @@ class OpenAIChatHandler(ProviderHandler, OpenAIFakeNonStream, OpenAIFCEnhance):
 
         if self.fc_enhance >= 2 and target_tc is None:
             target_tc = self._find_first_function_call(assembled)
+            if target_tc is not None:
+                _fc2_name = (target_tc.get("function") or {}).get("name", "")
+                logger.info("Streamify [全部拦截]: 拦截 OpenAI 工具 %s，尝试重写参数(流式)", _fc2_name)
 
         if target_tc is None:
             # 无需修复：重放原始 TC chunks
@@ -306,6 +309,7 @@ class OpenAIChatHandler(ProviderHandler, OpenAIFakeNonStream, OpenAIFCEnhance):
             return client
         else:
             # Level 2 提取失败但原参数非空，重放原始 TC chunks
+            logger.info("Streamify [全部拦截]: 工具 %s 参数提取失败，保留原始参数(流式)", fn_name)
             for c in tc_buffer:
                 await client.write(f"data: {json.dumps(c)}\n\n".encode())
             await client.write(b"data: [DONE]\n\n")
@@ -400,6 +404,9 @@ class OpenAIChatHandler(ProviderHandler, OpenAIFakeNonStream, OpenAIFCEnhance):
 
         if self.fc_enhance >= 2 and target_tc is None:
             target_tc = self._find_first_function_call(result)
+            if target_tc is not None:
+                _fc2_name = (target_tc.get("function") or {}).get("name", "")
+                logger.info("Streamify [全部拦截]: 拦截 OpenAI 工具 %s，尝试重写参数", _fc2_name)
 
         if target_tc is None:
             return web.json_response(result)
@@ -476,5 +483,7 @@ class OpenAIChatHandler(ProviderHandler, OpenAIFakeNonStream, OpenAIFCEnhance):
             _fail_name = (failed_tc.get("function") or {}).get("name", "unknown") if failed_tc else "unknown"
             logger.warning("Streamify: 工具 %s 参数在 %d 次重试后仍为空", _fail_name, self.fix_retries)
             _inject_fc_failure_text_openai(result, _fail_name)
+        elif not is_failed:
+            logger.info("Streamify [全部拦截]: 工具 %s 参数提取失败，保留原始参数", function_name)
 
         return web.json_response(result)
