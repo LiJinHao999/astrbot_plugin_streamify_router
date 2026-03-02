@@ -66,6 +66,7 @@ _EXTRACT_PROMPT_TEMPLATE = (
     "工具说明：{func_desc}\n"
     "参数 schema：{func_schema}\n"
     "{model_reply_section}"
+    "{tool_history_section}"
     "请仔细分析以下完整对话上下文（包括用户消息、助手回复和工具调用结果），"
     "从中提取调用该工具所需的参数。\n"
     "只输出 JSON 参数对象，不要包含任何其他文字。"
@@ -182,6 +183,7 @@ class OpenAIFCEnhance:
             func_desc=func_desc,
             func_schema=json.dumps(func_schema, ensure_ascii=False),
             model_reply_section=model_reply_section,
+            tool_history_section="",
         )
 
     @staticmethod
@@ -317,18 +319,53 @@ class OpenAIFCEnhance:
             f"模型已生成的回复文本（请优先从中提取具体参数值）：\n{model_reply}\n"
             if model_reply else ""
         )
-        tool_system = _EXTRACT_PROMPT_TEMPLATE.format(
-            function_name=function_name,
-            func_desc=func_desc,
-            func_schema=json.dumps(func_schema, ensure_ascii=False),
-            model_reply_section=model_reply_section,
-        )
 
         source_messages = (
             messages_override if messages_override is not None
             else original_body.get("messages", [])
         )
         source_messages = _trim_messages_by_turns(source_messages, self.fc_context_turns)  # type: ignore[attr-defined]
+
+        # 提取同名工具的历史调用参数和结果（OpenAI 格式）
+        tool_result_map: Dict[str, str] = {}
+        for m in source_messages:
+            if isinstance(m, dict) and m.get("role") == "tool":
+                tid = m.get("tool_call_id", "")
+                if tid:
+                    tool_result_map[tid] = m.get("content", "") or ""
+        history_entries: List[str] = []
+        for m in source_messages:
+            if not isinstance(m, dict) or m.get("role") != "assistant":
+                continue
+            for tc in (m.get("tool_calls") or []):
+                if not isinstance(tc, dict):
+                    continue
+                fn = tc.get("function") or {}
+                if fn.get("name") != function_name:
+                    continue
+                args_str = fn.get("arguments", "")
+                res_str = tool_result_map.get(tc.get("id", ""), "")
+                if len(res_str) > 500:
+                    res_str = res_str[:500] + "…(截断)"
+                entry = f"- 参数: {args_str}"
+                if res_str:
+                    entry += f"\n  结果: {res_str}"
+                history_entries.append(entry)
+        tool_history_section = ""
+        if history_entries:
+            tool_history_section = (
+                "以下是该工具之前的调用历史（参数和结果），请避免重复使用已失败的参数：\n"
+                + "\n".join(history_entries) + "\n"
+            )
+
+        tool_system = _EXTRACT_PROMPT_TEMPLATE.format(
+            function_name=function_name,
+            func_desc=func_desc,
+            func_schema=json.dumps(func_schema, ensure_ascii=False),
+            model_reply_section=model_reply_section,
+            tool_history_section=tool_history_section,
+        )
+
         # 提取所有消息的纯文本，扁平化为单条 user 消息发送
         context_lines: List[str] = []
         for msg in source_messages:
@@ -455,6 +492,7 @@ class ClaudeFCEnhance:
             func_desc=func_desc,
             func_schema=json.dumps(func_schema, ensure_ascii=False),
             model_reply_section=model_reply_section,
+            tool_history_section="",
         )
 
     @staticmethod
@@ -591,18 +629,71 @@ class ClaudeFCEnhance:
             f"模型已生成的回复文本（请优先从中提取具体参数值）：\n{model_reply}\n"
             if model_reply else ""
         )
-        tool_system = _EXTRACT_PROMPT_TEMPLATE.format(
-            function_name=function_name,
-            func_desc=func_desc,
-            func_schema=json.dumps(input_schema, ensure_ascii=False),
-            model_reply_section=model_reply_section,
-        )
 
         source_messages = (
             messages_override if messages_override is not None
             else original_body.get("messages", [])
         )
         source_messages = _trim_messages_by_turns(source_messages, self.fc_context_turns)  # type: ignore[attr-defined]
+
+        # 提取同名工具的历史调用参数和结果（Claude 格式）
+        tool_result_map: Dict[str, str] = {}
+        for m in source_messages:
+            if not isinstance(m, dict) or m.get("role") != "user":
+                continue
+            cnt = m.get("content", [])
+            if not isinstance(cnt, list):
+                continue
+            for blk in cnt:
+                if not isinstance(blk, dict) or blk.get("type") != "tool_result":
+                    continue
+                tid = blk.get("tool_use_id", "")
+                if not tid:
+                    continue
+                rc = blk.get("content", "")
+                if isinstance(rc, list):
+                    rc = " ".join(
+                        c.get("text", "") for c in rc
+                        if isinstance(c, dict) and c.get("type") == "text"
+                    )
+                elif not isinstance(rc, str):
+                    rc = ""
+                tool_result_map[tid] = rc
+        history_entries: List[str] = []
+        for m in source_messages:
+            if not isinstance(m, dict) or m.get("role") != "assistant":
+                continue
+            cnt = m.get("content", [])
+            if not isinstance(cnt, list):
+                continue
+            for blk in cnt:
+                if not isinstance(blk, dict) or blk.get("type") != "tool_use":
+                    continue
+                if blk.get("name") != function_name:
+                    continue
+                args_str = json.dumps(blk.get("input", {}), ensure_ascii=False)
+                res_str = tool_result_map.get(blk.get("id", ""), "")
+                if len(res_str) > 500:
+                    res_str = res_str[:500] + "…(截断)"
+                entry = f"- 参数: {args_str}"
+                if res_str:
+                    entry += f"\n  结果: {res_str}"
+                history_entries.append(entry)
+        tool_history_section = ""
+        if history_entries:
+            tool_history_section = (
+                "以下是该工具之前的调用历史（参数和结果），请避免重复使用已失败的参数：\n"
+                + "\n".join(history_entries) + "\n"
+            )
+
+        tool_system = _EXTRACT_PROMPT_TEMPLATE.format(
+            function_name=function_name,
+            func_desc=func_desc,
+            func_schema=json.dumps(input_schema, ensure_ascii=False),
+            model_reply_section=model_reply_section,
+            tool_history_section=tool_history_section,
+        )
+
         cleaned_messages: List[Dict[str, Any]] = []
         for msg in source_messages:
             if not isinstance(msg, dict):
@@ -752,6 +843,7 @@ class GeminiFCEnhance:
             func_desc=func_desc,
             func_schema=json.dumps(func_schema, ensure_ascii=False),
             model_reply_section=model_reply_section,
+            tool_history_section="",
         )
 
     @staticmethod
@@ -878,18 +970,67 @@ class GeminiFCEnhance:
             f"模型已生成的回复文本（请优先从中提取具体参数值）：\n{model_reply}\n"
             if model_reply else ""
         )
-        tool_system = _EXTRACT_PROMPT_TEMPLATE.format(
-            function_name=function_name,
-            func_desc=func_desc,
-            func_schema=json.dumps(func_params_schema, ensure_ascii=False),
-            model_reply_section=model_reply_section,
-        )
 
         contents = list(
             contents_override if contents_override is not None
             else original_body.get("contents", [])
         )
         contents = _trim_contents_by_turns(contents, self.fc_context_turns)  # type: ignore[attr-defined]
+
+        # 提取同名工具的历史调用参数和结果（Gemini 格式）
+        # functionResponse 在 user 角色的 parts 中，通过 name 匹配
+        func_resp_map: Dict[str, List[str]] = {}
+        for item in contents:
+            if not isinstance(item, dict) or item.get("role") != "user":
+                continue
+            for part in item.get("parts", []):
+                if not isinstance(part, dict):
+                    continue
+                fr = part.get("functionResponse")
+                if not isinstance(fr, dict):
+                    continue
+                fr_name = fr.get("name", "")
+                resp_content = (fr.get("response") or {}).get("content", "")
+                if isinstance(resp_content, str):
+                    func_resp_map.setdefault(fr_name, []).append(resp_content)
+        # 收集 functionCall 的参数
+        history_entries: List[str] = []
+        resp_idx: Dict[str, int] = {}
+        for item in contents:
+            if not isinstance(item, dict) or item.get("role") != "model":
+                continue
+            for part in item.get("parts", []):
+                if not isinstance(part, dict):
+                    continue
+                fc = part.get("functionCall")
+                if not isinstance(fc, dict) or fc.get("name") != function_name:
+                    continue
+                args_str = json.dumps(fc.get("args") or {}, ensure_ascii=False)
+                idx = resp_idx.get(function_name, 0)
+                resp_list = func_resp_map.get(function_name, [])
+                res_str = resp_list[idx] if idx < len(resp_list) else ""
+                resp_idx[function_name] = idx + 1
+                if len(res_str) > 500:
+                    res_str = res_str[:500] + "…(截断)"
+                entry = f"- 参数: {args_str}"
+                if res_str:
+                    entry += f"\n  结果: {res_str}"
+                history_entries.append(entry)
+        tool_history_section = ""
+        if history_entries:
+            tool_history_section = (
+                "以下是该工具之前的调用历史（参数和结果），请避免重复使用已失败的参数：\n"
+                + "\n".join(history_entries) + "\n"
+            )
+
+        tool_system = _EXTRACT_PROMPT_TEMPLATE.format(
+            function_name=function_name,
+            func_desc=func_desc,
+            func_schema=json.dumps(func_params_schema, ensure_ascii=False),
+            model_reply_section=model_reply_section,
+            tool_history_section=tool_history_section,
+        )
+
         cleaned_contents: List[Dict[str, Any]] = []
         for item in contents:
             if not isinstance(item, dict):
@@ -1043,6 +1184,7 @@ class OpenAIResponsesFCEnhance:
             func_desc=func_desc,
             func_schema=json.dumps(func_schema, ensure_ascii=False),
             model_reply_section=model_reply_section,
+            tool_history_section="",
         )
 
     @staticmethod
@@ -1159,12 +1301,6 @@ class OpenAIResponsesFCEnhance:
             f"模型已生成的回复文本（请优先从中提取具体参数值）：\n{model_reply}\n"
             if model_reply else ""
         )
-        tool_system = _EXTRACT_PROMPT_TEMPLATE.format(
-            function_name=function_name,
-            func_desc=func_desc,
-            func_schema=json.dumps(func_schema, ensure_ascii=False),
-            model_reply_section=model_reply_section,
-        )
 
         source_input = (
             input_override if input_override is not None
@@ -1173,6 +1309,44 @@ class OpenAIResponsesFCEnhance:
         extract_input: Any = []
         if isinstance(source_input, list):
             source_input = _trim_messages_by_turns(source_input, self.fc_context_turns, user_role="user")  # type: ignore[attr-defined]
+
+            # 提取同名工具的历史调用参数和结果（Responses 格式）
+            call_output_map: Dict[str, str] = {}
+            for item in source_input:
+                if not isinstance(item, dict) or item.get("type") != "function_call_output":
+                    continue
+                cid = item.get("call_id", "")
+                if cid:
+                    call_output_map[cid] = item.get("output", "") or ""
+            history_entries: List[str] = []
+            for item in source_input:
+                if not isinstance(item, dict) or item.get("type") != "function_call":
+                    continue
+                if item.get("name") != function_name:
+                    continue
+                args_str = item.get("arguments", "")
+                res_str = call_output_map.get(item.get("call_id", ""), "")
+                if len(res_str) > 500:
+                    res_str = res_str[:500] + "…(截断)"
+                entry = f"- 参数: {args_str}"
+                if res_str:
+                    entry += f"\n  结果: {res_str}"
+                history_entries.append(entry)
+            tool_history_section = ""
+            if history_entries:
+                tool_history_section = (
+                    "以下是该工具之前的调用历史（参数和结果），请避免重复使用已失败的参数：\n"
+                    + "\n".join(history_entries) + "\n"
+                )
+
+            tool_system = _EXTRACT_PROMPT_TEMPLATE.format(
+                function_name=function_name,
+                func_desc=func_desc,
+                func_schema=json.dumps(func_schema, ensure_ascii=False),
+                model_reply_section=model_reply_section,
+                tool_history_section=tool_history_section,
+            )
+
             # 提取所有消息的纯文本，扁平化为单条 user 消息
             context_lines: List[str] = []
             for item in source_input:
@@ -1189,6 +1363,14 @@ class OpenAIResponsesFCEnhance:
                 context_lines.append(f"{prefix}: {text}")
             if context_lines:
                 extract_input = "\n".join(context_lines)
+        else:
+            tool_system = _EXTRACT_PROMPT_TEMPLATE.format(
+                function_name=function_name,
+                func_desc=func_desc,
+                func_schema=json.dumps(func_schema, ensure_ascii=False),
+                model_reply_section=model_reply_section,
+                tool_history_section="",
+            )
 
         self._last_extract_context = extract_input  # type: ignore[attr-defined]
         extract_body: Dict[str, Any] = {
