@@ -1082,6 +1082,12 @@ class GeminiFCEnhance:
         if gen_cfg:
             fix_body["generationConfig"] = gen_cfg
 
+        logger.info(
+            "Streamify [fix对话]: 工具 %s, contents 共 %d 条, 引导: %s",
+            function_name, len(fix_contents),
+            guidance[:120] + "…" if len(guidance) > 120 else guidance,
+        )
+
         try:
             async with self._request(  # type: ignore[attr-defined]
                 "POST",
@@ -1091,8 +1097,14 @@ class GeminiFCEnhance:
                 params=params,
             ) as resp:
                 if resp.status != 200:
+                    logger.warning(
+                        "Streamify [fix对话]: API 返回 %d，工具 %s",
+                        resp.status, function_name,
+                    )
                     return None
                 result_args: Optional[Dict[str, Any]] = None
+                all_fc_names: List[str] = []
+                has_text = False
                 async for _event, data in self._iter_sse_events(resp):  # type: ignore[attr-defined]
                     if not data:
                         continue
@@ -1100,17 +1112,34 @@ class GeminiFCEnhance:
                         chunk = json.loads(data)
                         for cand in chunk.get("candidates", []):
                             for part in (cand.get("content") or {}).get("parts", []):
+                                if isinstance(part.get("text"), str) and part["text"].strip():
+                                    has_text = True
                                 _fc = part.get("functionCall")
-                                if (isinstance(_fc, dict)
-                                        and _fc.get("name") == function_name
-                                        and result_args is None):
-                                    args = _fc.get("args")
-                                    if isinstance(args, dict) and args:
-                                        result_args = args
+                                if isinstance(_fc, dict):
+                                    fc_name = _fc.get("name", "")
+                                    fc_args = _fc.get("args")
+                                    all_fc_names.append(fc_name)
+                                    if (fc_name == function_name
+                                            and isinstance(fc_args, dict)
+                                            and fc_args
+                                            and result_args is None):
+                                        result_args = fc_args
                     except Exception:
                         continue
+                if result_args is not None:
+                    logger.info(
+                        "Streamify [fix对话]: 工具 %s 成功获取参数: %s",
+                        function_name, json.dumps(result_args, ensure_ascii=False),
+                    )
+                else:
+                    logger.info(
+                        "Streamify [fix对话]: 工具 %s 未获取到有效参数，"
+                        "响应中的 FC=%s, 有文本=%s",
+                        function_name, all_fc_names or "无", has_text,
+                    )
                 return result_args
-        except Exception:
+        except Exception as exc:
+            logger.warning("Streamify [fix对话]: 请求异常 %s: %s", function_name, exc)
             return None
 
     @staticmethod
