@@ -991,7 +991,8 @@ class GeminiFCEnhance:
                 if isinstance(resp_content, str):
                     func_resp_map.setdefault(fr.get("name", ""), []).append(resp_content)
 
-        history_entries: List[str] = []
+        # 收集同名工具的历史调用：(args_dict, result_str) 对
+        history_data: List[Tuple[Dict[str, Any], str]] = []
         resp_idx: Dict[str, int] = {}
         for item in source_contents:
             if not isinstance(item, dict) or item.get("role") != "model":
@@ -1002,34 +1003,21 @@ class GeminiFCEnhance:
                 fc = part.get("functionCall")
                 if not isinstance(fc, dict) or fc.get("name") != function_name:
                     continue
-                args_str = json.dumps(fc.get("args") or {}, ensure_ascii=False)
+                args = fc.get("args") or {}
                 idx = resp_idx.get(function_name, 0)
                 resp_list = func_resp_map.get(function_name, [])
                 res_str = resp_list[idx] if idx < len(resp_list) else ""
                 resp_idx[function_name] = idx + 1
                 if len(res_str) > 500:
                     res_str = res_str[:500] + "…(截断)"
-                entry = f"- 参数: {args_str}"
-                if res_str:
-                    entry += f"\n  结果: {res_str}"
-                history_entries.append(entry)
+                history_data.append((args, res_str))
 
-        tool_history_section = ""
-        if history_entries:
-            tool_history_section = (
-                "以下是该工具之前的调用历史（参数和结果），请严格避免重复使用过去的参数，探索更多可能性(如更换关键词，将中文换为英文等)：\n"
-                + "\n".join(history_entries) + "\n"
-            )
-
-        tool_system = (
-            f"你是一个参数推断助手。工具 `{function_name}` 刚才因参数为空而调用失败。\n"
-            f"工具说明：{func_desc}\n"
-            f"参数 schema：{json.dumps(func_params_schema, ensure_ascii=False)}\n"
-            f"{model_reply_section}"
-            f"{tool_history_section}"
-            "请仔细分析以下完整对话上下文，推断出调用该工具所需的参数。\n"
-            "如果之前的参数导致了失败，请尝试新的思路（如更换关键词、将中文换为英文等）。\n"
-            "你只输出并且必须输出 JSON 参数对象。"
+        tool_system = _EXTRACT_PROMPT_TEMPLATE.format(
+            function_name=function_name,
+            func_desc=func_desc,
+            func_schema=json.dumps(func_params_schema, ensure_ascii=False),
+            model_reply_section=model_reply_section,
+            tool_history_section="",
         )
 
         # 提取对话中的纯文本，去除 functionCall / functionResponse
@@ -1049,19 +1037,42 @@ class GeminiFCEnhance:
                 text = _strip_system_tags(text)
                 if not text.strip():
                     continue
-                prefix = "用户" if role == "user" else "模型"
+                prefix = "用户" if role == "user" else "助手"
                 context_lines.append(f"{prefix}: {text}")
 
-        contents_for_extract: List[Dict[str, Any]] = []
+        # 构建多轮提取对话
+        extract_contents: List[Dict[str, Any]] = []
         if context_lines:
-            contents_for_extract.append({
+            extract_contents.append({
                 "role": "user",
                 "parts": [{"text": "\n".join(context_lines)}],
             })
-        self._last_extract_context = contents_for_extract  # type: ignore[attr-defined]
+
+        # 历史调用作为多轮：model 输出之前的 JSON → user 反馈失败
+        for args, res in history_data:
+            extract_contents.append({
+                "role": "model",
+                "parts": [{"text": json.dumps(args, ensure_ascii=False)}],
+            })
+            feedback = "这组参数导致调用失败。"
+            if res:
+                feedback += f" 返回: {res}"
+            feedback += " 请换个思路重新推断参数。"
+            extract_contents.append({
+                "role": "user",
+                "parts": [{"text": feedback}],
+            })
+
+        if not extract_contents:
+            extract_contents.append({
+                "role": "user",
+                "parts": [{"text": f"请为工具 `{function_name}` 推断参数。"}],
+            })
+
+        self._last_extract_context = extract_contents  # type: ignore[attr-defined]
 
         extract_body: Dict[str, Any] = {
-            "contents": contents_for_extract,
+            "contents": extract_contents,
             "systemInstruction": {"parts": [{"text": tool_system}]},
             "generationConfig": {"responseMimeType": "application/json"},
         }
