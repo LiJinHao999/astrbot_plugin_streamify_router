@@ -177,9 +177,16 @@ class GeminiHandler(ProviderHandler, GeminiFakeNonStream, GeminiFCEnhance):
         model_reply = forwarded_text + "".join(_reply_parts)
 
         fn_name = target_fc.get("name", "")
+        # 提取模型实际的 FC content（含 thought_signature 等元数据）
+        _model_fc_content = None
+        for _cand in response_data.get("candidates", []):
+            if "content" in _cand:
+                _model_fc_content = _cand["content"]
+                break
         extracted = await self._extract_args_as_json(
             clean_body, fn_name, stream_path, headers, params,
             model_reply=model_reply,
+            model_fc_content=_model_fc_content,
         )
         if extracted is not None:
             _before = target_fc.get("args", {})
@@ -221,9 +228,15 @@ class GeminiHandler(ProviderHandler, GeminiFakeNonStream, GeminiFCEnhance):
                 if retry_failed_fc is None and self._hint_tools:
                     retry_failed_fc = self._find_hinted_empty_fc(response_data)
                 if retry_failed_fc is not None:
+                    _retry_fc_content = None
+                    for _cand in response_data.get("candidates", []):
+                        if "content" in _cand:
+                            _retry_fc_content = _cand["content"]
+                            break
                     extracted = await self._extract_args_as_json(
                         clean_body, retry_failed_fc.get("name", ""), stream_path, headers, params,
                         model_reply=model_reply,
+                        model_fc_content=_retry_fc_content,
                     )
                     if extracted is not None:
                         _before = retry_failed_fc.get("args", {})
@@ -298,9 +311,18 @@ class GeminiHandler(ProviderHandler, GeminiFakeNonStream, GeminiFCEnhance):
             if error_info is not None:
                 tool_name, error_idx = error_info
                 ctx_contents = body["contents"][:max(0, error_idx - 1)]
+                # 提取模型发出 FC 的 content（含 thought_signature）
+                _l2_fc_content = None
+                all_contents = body.get("contents", [])
+                for _ci in range(error_idx - 1, -1, -1):
+                    _item = all_contents[_ci] if _ci < len(all_contents) else None
+                    if isinstance(_item, dict) and _item.get("role") == "model":
+                        _l2_fc_content = _item
+                        break
                 extracted = await self._extract_args_as_json(
                     body, tool_name, stream_path, headers, params,
                     contents_override=ctx_contents,
+                    model_fc_content=_l2_fc_content,
                 )
                 if extracted is not None:
                     if self.debug:
@@ -387,9 +409,15 @@ class GeminiHandler(ProviderHandler, GeminiFakeNonStream, GeminiFCEnhance):
         model_reply = "".join(_reply_parts)
 
         function_name = target_fc.get("name", "")
+        _model_fc_content_ns = None
+        for _cand in response_data.get("candidates", []):
+            if "content" in _cand:
+                _model_fc_content_ns = _cand["content"]
+                break
         extracted = await self._extract_args_as_json(
             clean_body, function_name, stream_path, headers, params,
             model_reply=model_reply,
+            model_fc_content=_model_fc_content_ns,
         )
         if extracted is not None:
             _before = target_fc.get("args", {})
@@ -459,9 +487,15 @@ class GeminiHandler(ProviderHandler, GeminiFakeNonStream, GeminiFCEnhance):
                             if isinstance(pt.get("text"), str):
                                 _rp.append(pt["text"])
                     _retry_reply = "".join(_rp)
+                    _retry_fc_content_ns = None
+                    for _cand in response_data.get("candidates", []):
+                        if "content" in _cand:
+                            _retry_fc_content_ns = _cand["content"]
+                            break
                     extracted = await self._extract_args_as_json(
                         clean_body, retry_failed_fc.get("name", ""), stream_path, headers, params,
                         model_reply=_retry_reply,
+                        model_fc_content=_retry_fc_content_ns,
                     )
                     if extracted is not None:
                         _before = retry_failed_fc.get("args", {})

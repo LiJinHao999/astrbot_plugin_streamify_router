@@ -955,12 +955,16 @@ class GeminiFCEnhance:
         params: Dict[str, str],
         contents_override: Optional[List[Dict[str, Any]]] = None,
         model_reply: str = "",
+        model_fc_content: Optional[Dict[str, Any]] = None,
     ) -> Optional[Dict[str, Any]]:
         """通过独立 fix 对话让模型重新产出带参数的工具调用。
 
-        不使用 JSON 提取模式，而是保留 tools，在对话末尾追加合成的
-        空参数 functionCall + 失败 functionResponse + 引导文本，
+        不使用 JSON 提取模式，而是保留 tools，在对话末尾追加
+        模型实际的 FC 响应 + 失败 functionResponse + 引导文本，
         让模型自主决定如何重新调用工具。
+
+        model_fc_content: 模型实际返回的 content dict（含 thought_signature 等元数据），
+                          若为 None 则合成一个简单 FC（thinking model 会 400）。
         """
         contents = list(
             contents_override if contents_override is not None
@@ -1009,24 +1013,23 @@ class GeminiFCEnhance:
         # ---- 构建 fix 对话 ----
         fix_contents = list(contents)
 
-        # 若末尾已是包含该工具空 FC 的 model 消息则不重复追加
-        last_is_failed_fc = False
+        # 追加模型的 FC 消息：优先使用原始响应（含 thought_signature），否则合成
+        last_is_model_fc = False
         if (fix_contents
                 and isinstance(fix_contents[-1], dict)
                 and fix_contents[-1].get("role") == "model"):
             for part in fix_contents[-1].get("parts", []):
-                if isinstance(part, dict):
-                    _fc = part.get("functionCall")
-                    if (isinstance(_fc, dict)
-                            and _fc.get("name") == function_name
-                            and not _fc.get("args")):
-                        last_is_failed_fc = True
-                        break
-        if not last_is_failed_fc:
-            fix_contents.append({
-                "role": "model",
-                "parts": [{"functionCall": {"name": function_name, "args": {}}}],
-            })
+                if isinstance(part, dict) and part.get("functionCall"):
+                    last_is_model_fc = True
+                    break
+        if not last_is_model_fc:
+            if model_fc_content and isinstance(model_fc_content, dict):
+                fix_contents.append(model_fc_content)
+            else:
+                fix_contents.append({
+                    "role": "model",
+                    "parts": [{"functionCall": {"name": function_name, "args": {}}}],
+                })
 
         # user 消息：functionResponse(失败) + 引导文本
         schema = self._extract_tool_schema(original_body.get("tools", []), function_name)
