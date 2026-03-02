@@ -7,14 +7,10 @@ from aiohttp import ClientSession, web
 
 from astrbot.api import logger
 
-from .fc_enhance import _DEFAULT_TOOL_ERROR_PATTERNS
 from .providers import (
     ProviderHandler,
     _sanitize_for_log,
-    OpenAIChatHandler,
-    ClaudeHandler,
-    GeminiHandler,
-    OpenAIResponsesHandler,
+    get_handler_classes,
 )
 
 
@@ -43,48 +39,18 @@ class ProviderRoute:
             debug=self.debug,
             request_timeout=request_timeout,
         )
+        common_kwargs = dict(
+            session=session,
+            debug=self.debug,
+            request_timeout=request_timeout,
+            pseudo_non_stream=pseudo_non_stream,
+            extract_args=extract_args,
+            fix_retries=fix_retries,
+            tool_error_patterns=tool_error_patterns,
+        )
         self.handlers: List[ProviderHandler] = [
-            OpenAIChatHandler(
-                self.target_url,
-                self.proxy_url,
-                session=session,
-                debug=self.debug,
-                request_timeout=request_timeout,
-                pseudo_non_stream=pseudo_non_stream,
-                extract_args=extract_args,
-                fix_retries=fix_retries,
-                tool_error_patterns=tool_error_patterns,
-            ),
-            ClaudeHandler(
-                self.target_url,
-                self.proxy_url,
-                session=session,
-                debug=self.debug,
-                request_timeout=request_timeout,
-                pseudo_non_stream=pseudo_non_stream,
-                extract_args=extract_args,
-                fix_retries=fix_retries,
-                tool_error_patterns=tool_error_patterns,
-            ),
-            GeminiHandler(
-                self.target_url,
-                self.proxy_url,
-                session=session,
-                debug=self.debug,
-                request_timeout=request_timeout,
-                pseudo_non_stream=pseudo_non_stream,
-                extract_args=extract_args,
-                fix_retries=fix_retries,
-                tool_error_patterns=tool_error_patterns,
-            ),
-            OpenAIResponsesHandler(
-                self.target_url,
-                self.proxy_url,
-                session=session,
-                debug=self.debug,
-                request_timeout=request_timeout,
-                pseudo_non_stream=pseudo_non_stream,
-            ),
+            cls(self.target_url, self.proxy_url, **common_kwargs)
+            for cls in get_handler_classes()
         ]
 
     async def dispatch(self, req: web.Request, sub_path: str) -> web.Response:

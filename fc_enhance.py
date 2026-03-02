@@ -696,3 +696,202 @@ class GeminiFCEnhance:
             contents.append({"role": "user", "parts": [{"text": user_hint}]})
             body["contents"] = contents
         return body
+
+
+class OpenAIResponsesFCEnhance:
+    """OpenAI Responses API FC enhancement mixin."""
+
+    @staticmethod
+    def _tool_has_required_params(tools: List[Dict[str, Any]], tool_name: str) -> bool:
+        for tool in tools:
+            if tool.get("name") == tool_name:
+                required = (tool.get("parameters") or {}).get("required", [])
+                return bool(required)
+        return False
+
+    @staticmethod
+    def _extract_tool_schema(tools: List[Dict[str, Any]], tool_name: str) -> Optional[Dict[str, Any]]:
+        for tool in tools:
+            if tool.get("name") == tool_name:
+                return tool.get("parameters")
+        return None
+
+    @staticmethod
+    def _find_failed_function_call(
+        response_data: Dict[str, Any],
+        tools: Optional[List[Dict[str, Any]]] = None,
+    ) -> Optional[Dict[str, Any]]:
+        tools = tools or []
+        for item in response_data.get("output", []):
+            if not isinstance(item, dict) or item.get("type") != "function_call":
+                continue
+            args = item.get("arguments", "")
+            tool_name = item.get("name", "")
+            if not args or args == "{}":
+                if OpenAIResponsesFCEnhance._tool_has_required_params(tools, tool_name):
+                    return item
+                continue
+            try:
+                json.loads(args)
+            except json.JSONDecodeError:
+                return item
+        return None
+
+    def _find_tool_error_in_request(
+        self,
+        body: Dict[str, Any],
+    ) -> Optional[Tuple[str, str, int]]:
+        """在 input 中查找工具执行错误（Responses API 格式）。
+
+        返回 (tool_name, call_id, function_call_item_index) 或 None。
+        """
+        input_items = body.get("input", [])
+        if not isinstance(input_items, list):
+            return None
+        for i in range(len(input_items) - 1, -1, -1):
+            item = input_items[i]
+            if not isinstance(item, dict):
+                continue
+            if item.get("type") == "function_call":
+                break
+            if item.get("type") != "function_call_output":
+                continue
+            content = item.get("output", "")
+            if not isinstance(content, str) or not _is_tool_execution_error(content, self._error_patterns):  # type: ignore[attr-defined]
+                continue
+            call_id = item.get("call_id", "")
+            for j in range(i - 1, -1, -1):
+                prev = input_items[j]
+                if not isinstance(prev, dict):
+                    continue
+                if prev.get("type") == "function_call":
+                    if prev.get("call_id") == call_id or not call_id:
+                        return (prev.get("name", ""), call_id, j)
+                    break
+        return None
+
+    @staticmethod
+    def _build_corrected_tool_response(
+        call_id: str, tool_name: str, args: Dict[str, Any], model_name: str
+    ) -> Dict[str, Any]:
+        return {
+            "id": f"resp_proxy_fix_{int(time.time() * 1000)}",
+            "object": "response",
+            "status": "completed",
+            "model": model_name,
+            "output": [{
+                "type": "function_call",
+                "id": f"fc_proxy_{int(time.time() * 1000)}",
+                "call_id": call_id,
+                "name": tool_name,
+                "arguments": json.dumps(args),
+            }],
+        }
+
+    @staticmethod
+    def _patch_function_call_args(
+        response_data: Dict[str, Any], function_name: str, args: Dict[str, Any]
+    ) -> None:
+        for item in response_data.get("output", []):
+            if not isinstance(item, dict):
+                continue
+            if item.get("type") == "function_call" and item.get("name") == function_name:
+                item["arguments"] = json.dumps(args)
+                return
+
+    async def _extract_args_as_json(
+        self,
+        original_body: Dict[str, Any],
+        function_name: str,
+        sub_path: str,
+        headers: Dict[str, str],
+        input_override: Optional[List[Dict[str, Any]]] = None,
+    ) -> Optional[Dict[str, Any]]:
+        func_desc = ""
+        func_schema: Dict[str, Any] = {}
+        for tool in original_body.get("tools", []):
+            if tool.get("name") == function_name:
+                func_desc = tool.get("description", "")
+                func_schema = tool.get("parameters", {})
+                break
+
+        tool_system = (
+            f"你是一个参数提取助手。用户正在使用工具 `{function_name}`。\n"
+            f"工具说明：{func_desc}\n"
+            f"参数 schema：{json.dumps(func_schema, ensure_ascii=False)}\n"
+            f"根据对话内容，只输出调用该工具所需的 JSON 参数对象，不要包含任何其他文字。"
+        )
+
+        source_input = (
+            input_override if input_override is not None
+            else original_body.get("input", [])
+        )
+
+        extract_body: Dict[str, Any] = {
+            "model": original_body.get("model", ""),
+            "instructions": tool_system,
+            "input": source_input if isinstance(source_input, list) else [],
+            "text": {"format": {"type": "json_object"}},
+            "stream": True,
+        }
+
+        try:
+            async with self._request(  # type: ignore[attr-defined]
+                "POST",
+                self._build_url(sub_path),  # type: ignore[attr-defined]
+                json=extract_body,
+                headers=headers,
+            ) as resp:
+                if resp.status != 200:
+                    return None
+                result = await self._build_non_stream_response(resp)  # type: ignore[attr-defined]
+                text = self._extract_text_from_response(result)
+                if not text:
+                    return None
+                if text.startswith("```"):
+                    lines = text.splitlines()
+                    text = "\n".join(
+                        lines[1:-1] if lines[-1].strip() == "```" else lines[1:]
+                    )
+                parsed = json.loads(text)
+                return parsed if isinstance(parsed, dict) else None
+        except Exception:
+            return None
+
+    @staticmethod
+    def _extract_text_from_response(response_data: Dict[str, Any]) -> str:
+        """从 Responses API 响应中提取文本内容。"""
+        for item in response_data.get("output", []):
+            if not isinstance(item, dict):
+                continue
+            if item.get("type") == "message":
+                for part in item.get("content", []):
+                    if isinstance(part, dict) and part.get("type") == "output_text":
+                        text = part.get("text", "").strip()
+                        if text:
+                            return text
+        return ""
+
+    @staticmethod
+    def _inject_hint(body: Dict[str, Any], tool_name: str = "") -> Dict[str, Any]:
+        body = dict(body)
+        hint = _EMPTY_ARGS_HINT
+        if tool_name:
+            schema = OpenAIResponsesFCEnhance._extract_tool_schema(body.get("tools", []), tool_name)
+            if schema:
+                hint = (
+                    f"{hint}\n\n工具 `{tool_name}` 必须使用以下参数调用：\n"
+                    f"{json.dumps(schema, ensure_ascii=False, indent=2)}"
+                )
+            else:
+                hint = f"{hint}\n\n特别注意：工具 `{tool_name}` 的参数不能为空。"
+        existing = body.get("instructions", "")
+        body["instructions"] = f"{existing}\n\n{hint}" if existing else hint
+        if tool_name:
+            input_items = list(body.get("input", []))
+            input_items.append({
+                "role": "user",
+                "content": f"请立即调用工具 `{tool_name}`，并填写所有必填参数，不要留空。",
+            })
+            body["input"] = input_items
+        return body

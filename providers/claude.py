@@ -7,7 +7,7 @@ from astrbot.api import logger
 
 from ..fake_non_stream import ClaudeFakeNonStream
 from ..fc_enhance import ClaudeFCEnhance
-from .base import ProviderHandler, _FC_FAILURE_MSG
+from .base import ProviderHandler, _FC_FAILURE_MSG, register_handler
 
 
 def _inject_fc_failure_text_claude(result: Dict[str, Any], tool_name: str) -> None:
@@ -17,6 +17,7 @@ def _inject_fc_failure_text_claude(result: Dict[str, Any], tool_name: str) -> No
     result["stop_reason"] = "end_turn"
 
 
+@register_handler
 class ClaudeHandler(ProviderHandler, ClaudeFakeNonStream, ClaudeFCEnhance):
     ENDPOINT = "v1/messages"
 
@@ -195,12 +196,9 @@ class ClaudeHandler(ProviderHandler, ClaudeFakeNonStream, ClaudeFCEnhance):
                             "name": cb.get("name", ""),
                             "_input": "",
                         }
-                    else:
-                        max_forwarded_idx = max(max_forwarded_idx, idx)
-
-                    if tc_detected:
                         tc_buffer.append((event_name, payload))
                     else:
+                        max_forwarded_idx = max(max_forwarded_idx, idx)
                         await self._write_event(client, event_name, payload)
 
                 elif event_type == "content_block_delta":
@@ -209,13 +207,18 @@ class ClaudeHandler(ProviderHandler, ClaudeFakeNonStream, ClaudeFCEnhance):
                         delta = payload.get("delta") or {}
                         if delta.get("type") == "input_json_delta":
                             tc_blocks[idx]["_input"] += delta.get("partial_json", "")
-
-                    if tc_detected:
                         tc_buffer.append((event_name, payload))
                     else:
                         await self._write_event(client, event_name, payload)
 
-                elif event_type in ("content_block_stop", "message_delta", "message_stop"):
+                elif event_type == "content_block_stop":
+                    idx = int(payload.get("index", 0))
+                    if idx in tc_blocks:
+                        tc_buffer.append((event_name, payload))
+                    else:
+                        await self._write_event(client, event_name, payload)
+
+                elif event_type in ("message_delta", "message_stop"):
                     if tc_detected:
                         tc_buffer.append((event_name, payload))
                     else:
@@ -368,6 +371,9 @@ class ClaudeHandler(ProviderHandler, ClaudeFakeNonStream, ClaudeFCEnhance):
             return await self._passthrough(req, sub_path)
 
         if client_wants_stream:
+            # 无 tools 定义时直接透传
+            if not clean_body.get("tools"):
+                return await self._proxy_stream(req, sub_path, clean_body, headers)
             return await self._handle_stream_fc_hook(req, sub_path, clean_body, headers)
 
         clean_body["stream"] = True

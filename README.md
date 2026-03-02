@@ -1,12 +1,12 @@
-# astrbot_plugin_streamify_router
+# astrbot_plugin_smarter_fc_router
 
-Astrbot 无感稳流网关（AstrBot 插件）。
+Astrbot 稳流强化网关（AstrBot 插件）。
 
 ## 常见问题
 
 如果你有遇到以下问题:
 
-1. gemini function calling(尤其是gemini3.0模型) / 其它模型 fuction calling 工具调用失败或参数空回
+1. gemini function calling(尤其是gemini3.0模型) / 其它模型 fuction calling 工具调用不准确/空回/不够聪明
 
 ```bash
 Tool `astrbot_execute_shell` Result: error: Tool handler parameter mismatch,          
@@ -21,7 +21,11 @@ Tool `astrbot_execute_shell` Result: error: Tool handler parameter mismatch,
 上游429超时，无法自动重试
 ```
 
-插件将在本地启动一个转发修复端口(patch)来解决这类出于模型问题/上游问题所产生的兼容性问题
+插件将在本地启动一个转发修复端口(patch)来强化模型的工具调用能力
+
+并解决一些因上游问题所产生的兼容性问题(断流、空回等)
+
+## Function Calling 强化效果展示(gemini3.0-flash)
 
 只需要你**填写需要转发的url，并更换astrbot provider的url为转发的url**
 

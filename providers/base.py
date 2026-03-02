@@ -12,6 +12,21 @@ from astrbot.core.utils.astrbot_path import get_astrbot_data_path
 
 from ..fc_enhance import _DEFAULT_TOOL_ERROR_PATTERNS, _compile_error_patterns
 
+# --------------- handler 自注册表 ---------------
+_handler_registry: list = []
+
+
+def register_handler(cls):
+    """装饰器：将 handler 类注册到全局列表，供 ProviderRoute 自动发现。"""
+    _handler_registry.append(cls)
+    return cls
+
+
+def get_handler_classes() -> list:
+    """返回所有已注册的 handler 类（按注册顺序）。"""
+    return list(_handler_registry)
+
+
 # 匹配长 base64/base32 字符串（≥64 个字符）
 _LONG_BASE64_RE = re.compile(r'^[A-Za-z0-9+/\-_]{64,}={0,3}$')
 

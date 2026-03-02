@@ -8,7 +8,7 @@ from astrbot.api import logger
 
 from ..fake_non_stream import OpenAIFakeNonStream
 from ..fc_enhance import OpenAIFCEnhance
-from .base import ProviderHandler, _FC_FAILURE_MSG
+from .base import ProviderHandler, _FC_FAILURE_MSG, register_handler
 
 
 def _inject_fc_failure_text_openai(result: Dict[str, Any], tool_name: str) -> None:
@@ -24,6 +24,7 @@ def _inject_fc_failure_text_openai(result: Dict[str, Any], tool_name: str) -> No
             return
 
 
+@register_handler
 class OpenAIChatHandler(ProviderHandler, OpenAIFakeNonStream, OpenAIFCEnhance):
     ENDPOINT = "v1/chat/completions"
 
@@ -191,17 +192,14 @@ class OpenAIChatHandler(ProviderHandler, OpenAIFakeNonStream, OpenAIFCEnhance):
                     base_meta["created"] = chunk["created"]
 
                 choices = chunk.get("choices") or []
-                if not tc_detected:
-                    is_tc = any(
-                        bool((c.get("delta") or {}).get("tool_calls"))
-                        or bool((c.get("delta") or {}).get("function_call"))
-                        or c.get("finish_reason") in ("tool_calls", "function_call")
-                        for c in choices
-                    )
-                    if is_tc:
-                        tc_detected = True
-
-                if tc_detected:
+                is_tc = any(
+                    bool((c.get("delta") or {}).get("tool_calls"))
+                    or bool((c.get("delta") or {}).get("function_call"))
+                    or c.get("finish_reason") in ("tool_calls", "function_call")
+                    for c in choices
+                )
+                if is_tc:
+                    tc_detected = True
                     tc_buffer.append(chunk)
                 else:
                     await client.write(f"data: {json.dumps(chunk)}\n\n".encode())
@@ -340,6 +338,9 @@ class OpenAIChatHandler(ProviderHandler, OpenAIFakeNonStream, OpenAIFCEnhance):
 
         # 流式客户端：有条件透传 + TC 拦截检测修复
         if client_wants_stream:
+            # 无 tools 定义时直接透传，不走 FC hook
+            if not clean_body.get("tools") and not clean_body.get("functions"):
+                return await self._proxy_stream(req, sub_path, clean_body, headers)
             return await self._handle_stream_fc_hook(req, sub_path, clean_body, headers)
 
         # 非流式客户端：内部转流收集，FC 检测修复后返回 JSON

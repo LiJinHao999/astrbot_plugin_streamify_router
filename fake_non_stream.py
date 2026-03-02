@@ -472,3 +472,36 @@ class GeminiFakeNonStream:
         if state["model_version"] is not None:
             response_data["modelVersion"] = state["model_version"]
         return response_data
+
+
+class OpenAIResponsesFakeNonStream:
+    """OpenAI Responses API SSE→non-stream reassembly mixin."""
+
+    async def _build_non_stream_response(self, resp: ClientResponse) -> Dict[str, Any]:
+        completed: Optional[Dict[str, Any]] = None
+        fallback: Optional[Dict[str, Any]] = None
+
+        async for event_name, data in self._iter_sse_events(resp):  # type: ignore[attr-defined]
+            if not data or data == "[DONE]":
+                continue
+            try:
+                payload = json.loads(data)
+            except json.JSONDecodeError:
+                continue
+
+            event_type = event_name or payload.get("type")
+            if event_type == "response.completed":
+                response_obj = payload.get("response")
+                completed = response_obj if isinstance(response_obj, dict) else payload
+            elif event_type == "response.created":
+                response_obj = payload.get("response")
+                if isinstance(response_obj, dict):
+                    fallback = response_obj
+                elif isinstance(payload, dict):
+                    fallback = payload
+
+        if completed is not None:
+            return completed
+        if fallback is not None:
+            return fallback
+        return {"error": {"message": "No completed response event.", "type": "proxy_error"}}

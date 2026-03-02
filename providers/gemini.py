@@ -7,7 +7,7 @@ from astrbot.api import logger
 
 from ..fake_non_stream import GeminiFakeNonStream
 from ..fc_enhance import GeminiFCEnhance
-from .base import ProviderHandler, _FC_FAILURE_MSG
+from .base import ProviderHandler, _FC_FAILURE_MSG, register_handler
 
 
 def _inject_fc_failure_text_gemini(result: Dict[str, Any], tool_name: str) -> None:
@@ -22,6 +22,7 @@ def _inject_fc_failure_text_gemini(result: Dict[str, Any], tool_name: str) -> No
         return
 
 
+@register_handler
 class GeminiHandler(ProviderHandler, GeminiFakeNonStream, GeminiFCEnhance):
 
     def _find_hinted_empty_fc(self, response_data: dict) -> Optional[dict]:
@@ -124,16 +125,13 @@ class GeminiHandler(ProviderHandler, GeminiFakeNonStream, GeminiFCEnhance):
                 try:
                     payload = json.loads(data)
                 except json.JSONDecodeError:
-                    if not fc_detected:
-                        await client.write(f"data: {data}\n\n".encode())
+                    await client.write(f"data: {data}\n\n".encode())
                     continue
                 if not isinstance(payload, dict):
                     continue
 
-                if not fc_detected and self._payload_has_fc(payload):
+                if self._payload_has_fc(payload):
                     fc_detected = True
-
-                if fc_detected:
                     fc_buffer.append(payload)
                 else:
                     await client.write(f"data: {json.dumps(payload)}\n\n".encode())
@@ -312,6 +310,9 @@ class GeminiHandler(ProviderHandler, GeminiFakeNonStream, GeminiFCEnhance):
 
         # 流式请求：有条件透传 + FC 拦截检测修复
         if client_wants_stream:
+            # 无 tools 定义时直接透传
+            if not clean_body.get("tools"):
+                return await self._proxy_stream(req, stream_path, clean_body, headers, params)
             return await self._handle_stream_fc_hook(req, stream_path, clean_body, headers, params)
 
         # 非流式请求：内部转流收集，FC 检测修复后返回 JSON
