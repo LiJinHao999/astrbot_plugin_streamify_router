@@ -27,6 +27,7 @@ class ProviderRoute:
         extract_args: bool = False,
         fix_retries: int = 1,
         tool_error_patterns: Optional[List[str]] = None,
+        fc_context_turns: int = 1,
     ):
         self.route_name = route_name
         self.target_url = target_url.rstrip("/")
@@ -47,6 +48,7 @@ class ProviderRoute:
             extract_args=extract_args,
             fix_retries=fix_retries,
             tool_error_patterns=tool_error_patterns,
+            fc_context_turns=fc_context_turns,
         )
         self.handlers: List[ProviderHandler] = [
             cls(self.target_url, self.proxy_url, **common_kwargs)
@@ -72,6 +74,7 @@ class StreamifyProxy:
         extract_args: bool = False,
         fix_retries: int = 1,
         tool_error_patterns: Optional[List[str]] = None,
+        fc_context_turns: int = 1,
     ):
         self.port = port
         self.providers_config = providers or []
@@ -81,6 +84,7 @@ class StreamifyProxy:
         self.extract_args = bool(extract_args)
         self.fix_retries = max(0, int(fix_retries))
         self.tool_error_patterns: Optional[List[str]] = tool_error_patterns
+        self.fc_context_turns = max(0, int(fc_context_turns))
         self.providers: Dict[str, ProviderRoute] = {}
         self.session: Optional[ClientSession] = None
         self.app = web.Application(client_max_size=20 * 1024 * 1024)
@@ -135,6 +139,7 @@ class StreamifyProxy:
                 extract_args=self.extract_args,
                 fix_retries=self.fix_retries,
                 tool_error_patterns=self.tool_error_patterns,
+                fc_context_turns=self.fc_context_turns,
             )
 
     async def _dispatch(self, req: web.Request) -> web.Response:

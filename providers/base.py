@@ -69,6 +69,7 @@ class ProviderHandler:
         extract_args: bool = False,
         fix_retries: int = 1,
         tool_error_patterns: Optional[List[str]] = None,
+        fc_context_turns: int = 1,
     ):
         self.target = target_url.rstrip("/")
         self.proxy = proxy_url.strip() or None
@@ -78,6 +79,7 @@ class ProviderHandler:
         self.pseudo_non_stream = bool(pseudo_non_stream)
         self.extract_args = bool(extract_args)
         self.fix_retries = max(0, int(fix_retries))
+        self.fc_context_turns = max(0, int(fc_context_turns))
         patterns = tool_error_patterns if tool_error_patterns is not None else _DEFAULT_TOOL_ERROR_PATTERNS
         self._error_patterns: List[Pattern[str]] = _compile_error_patterns(patterns)
         plugin_data_dir = _resolve_plugin_data_dir()

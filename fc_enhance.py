@@ -19,6 +19,50 @@ _DEFAULT_TOOL_ERROR_PATTERNS: List[str] = [
 ]
 
 
+def _trim_messages_by_turns(
+    messages: List[Dict[str, Any]], turns: int, user_role: str = "user"
+) -> List[Dict[str, Any]]:
+    """保留最近 N 轮对话（每轮以 user 消息为起点）。turns=0 不裁剪。"""
+    if turns <= 0 or not messages:
+        return messages
+    count = 0
+    cut = 0
+    for i in range(len(messages) - 1, -1, -1):
+        if isinstance(messages[i], dict) and messages[i].get("role") == user_role:
+            count += 1
+            if count >= turns:
+                cut = i
+                break
+    return messages[cut:]
+
+
+def _trim_contents_by_turns(
+    contents: List[Dict[str, Any]], turns: int, user_role: str = "user"
+) -> List[Dict[str, Any]]:
+    """保留最近 N 轮对话（Gemini contents 格式，无 system）。turns=0 不裁剪。"""
+    if turns <= 0 or not contents:
+        return contents
+    count = 0
+    cut = 0
+    for i in range(len(contents) - 1, -1, -1):
+        if isinstance(contents[i], dict) and contents[i].get("role") == user_role:
+            count += 1
+            if count >= turns:
+                cut = i
+                break
+    return contents[cut:]
+
+
+_EXTRACT_PROMPT_TEMPLATE = (
+    "你是一个参数提取助手。用户正在使用工具 `{function_name}`。\n"
+    "工具说明：{func_desc}\n"
+    "参数 schema：{func_schema}\n"
+    "请仔细分析以下完整对话上下文（包括用户消息、助手回复和工具调用结果），"
+    "从中提取调用该工具所需的参数。\n"
+    "只输出 JSON 参数对象，不要包含任何其他文字。"
+)
+
+
 def _compile_error_patterns(patterns: List[str]) -> List[Pattern[str]]:
     """编译正则列表，跳过无效规则并记录警告。"""
     compiled: List[Pattern[str]] = []
@@ -178,17 +222,17 @@ class OpenAIFCEnhance:
                 func_schema = fn.get("parameters", {})
                 break
 
-        tool_system = (
-            f"你是一个参数提取助手。用户正在使用工具 `{function_name}`。\n"
-            f"工具说明：{func_desc}\n"
-            f"参数 schema：{json.dumps(func_schema, ensure_ascii=False)}\n"
-            f"根据对话内容，只输出调用该工具所需的 JSON 参数对象，不要包含任何其他文字。"
+        tool_system = _EXTRACT_PROMPT_TEMPLATE.format(
+            function_name=function_name,
+            func_desc=func_desc,
+            func_schema=json.dumps(func_schema, ensure_ascii=False),
         )
 
         source_messages = (
             messages_override if messages_override is not None
             else original_body.get("messages", [])
         )
+        source_messages = _trim_messages_by_turns(source_messages, self.fc_context_turns)  # type: ignore[attr-defined]
         messages = [{"role": "system", "content": tool_system}]
         for msg in source_messages:
             if isinstance(msg, dict) and msg.get("role") != "system":
@@ -402,17 +446,17 @@ class ClaudeFCEnhance:
                 input_schema = tool.get("input_schema", {})
                 break
 
-        tool_system = (
-            f"你是一个参数提取助手。用户正在使用工具 `{function_name}`。\n"
-            f"工具说明：{func_desc}\n"
-            f"参数 schema：{json.dumps(input_schema, ensure_ascii=False)}\n"
-            f"根据对话内容，只输出调用该工具所需的 JSON 参数对象，不要包含任何其他文字。"
+        tool_system = _EXTRACT_PROMPT_TEMPLATE.format(
+            function_name=function_name,
+            func_desc=func_desc,
+            func_schema=json.dumps(input_schema, ensure_ascii=False),
         )
 
         source_messages = (
             messages_override if messages_override is not None
             else original_body.get("messages", [])
         )
+        source_messages = _trim_messages_by_turns(source_messages, self.fc_context_turns)  # type: ignore[attr-defined]
         extract_body: Dict[str, Any] = {
             "model": original_body.get("model", ""),
             "max_tokens": original_body.get("max_tokens", 1024),
@@ -608,17 +652,17 @@ class GeminiFCEnhance:
                     func_params_schema = fd.get("parameters", {})
                     break
 
-        tool_system = (
-            f"你是一个参数提取助手。用户正在使用工具 `{function_name}`。\n"
-            f"工具说明：{func_desc}\n"
-            f"参数 schema：{json.dumps(func_params_schema, ensure_ascii=False)}\n"
-            f"根据对话内容，只输出调用该工具所需的 JSON 参数对象，不要包含任何其他文字。"
+        tool_system = _EXTRACT_PROMPT_TEMPLATE.format(
+            function_name=function_name,
+            func_desc=func_desc,
+            func_schema=json.dumps(func_params_schema, ensure_ascii=False),
         )
 
         contents = list(
             contents_override if contents_override is not None
             else original_body.get("contents", [])
         )
+        contents = _trim_contents_by_turns(contents, self.fc_context_turns)  # type: ignore[attr-defined]
 
         gen_cfg = dict(original_body.get("generationConfig") or {})
         gen_cfg["responseMimeType"] = "application/json"
@@ -815,17 +859,18 @@ class OpenAIResponsesFCEnhance:
                 func_schema = tool.get("parameters", {})
                 break
 
-        tool_system = (
-            f"你是一个参数提取助手。用户正在使用工具 `{function_name}`。\n"
-            f"工具说明：{func_desc}\n"
-            f"参数 schema：{json.dumps(func_schema, ensure_ascii=False)}\n"
-            f"根据对话内容，只输出调用该工具所需的 JSON 参数对象，不要包含任何其他文字。"
+        tool_system = _EXTRACT_PROMPT_TEMPLATE.format(
+            function_name=function_name,
+            func_desc=func_desc,
+            func_schema=json.dumps(func_schema, ensure_ascii=False),
         )
 
         source_input = (
             input_override if input_override is not None
             else original_body.get("input", [])
         )
+        if isinstance(source_input, list):
+            source_input = _trim_messages_by_turns(source_input, self.fc_context_turns, user_role="user")  # type: ignore[attr-defined]
 
         extract_body: Dict[str, Any] = {
             "model": original_body.get("model", ""),

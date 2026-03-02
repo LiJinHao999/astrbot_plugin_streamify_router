@@ -45,6 +45,12 @@
     "default": true,
     "hint": "开启后，若工具调用参数为空，无效，或失败，会额外发送一条请求让模型单独输出 JSON 参数，再注入回原响应（适用于 Gemini/OpenAI/Claude）"
   },
+    "fc_context_turns": {
+    "description": "FC 提示词注入时传入的对话轮数",
+    "type": "int",
+    "default": 1,
+    "hint": "提取工具参数时，传入最近几轮对话作为上下文；轮数越多上下文越丰富但 token 消耗越大；0 表示传入全部对话"
+  },
     "debug": {
     "description": "启用调试日志",
     "type": "bool",

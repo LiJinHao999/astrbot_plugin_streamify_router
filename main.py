@@ -79,6 +79,15 @@ class StreamifyPlugin(Star):
             return default_timeout
         return timeout
 
+    def _resolve_fc_context_turns(self) -> int:
+        default = 1
+        value = self.config.get("fc_context_turns", default)
+        try:
+            turns = int(value)
+        except (TypeError, ValueError):
+            return default
+        return max(0, turns)
+
     def _resolve_fix_retries(self) -> int:
         default_retries = 1
         value = self.config.get(
@@ -152,6 +161,7 @@ class StreamifyPlugin(Star):
             self.config.get("extract_args", self.config.get("gemini_extract_args", False)),
             False,
         )
+        fc_context_turns = self._resolve_fc_context_turns()
 
         if not pseudo_non_stream and not extract_args:
             logger.info("Streamify: 假非流与 FC 增强均已禁用，代理不启动")
@@ -175,6 +185,7 @@ class StreamifyPlugin(Star):
             extract_args=extract_args,
             fix_retries=fix_retries,
             tool_error_patterns=tool_error_patterns,
+            fc_context_turns=fc_context_turns,
         )
         await self.proxy.start()
 
