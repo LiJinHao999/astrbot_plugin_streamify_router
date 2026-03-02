@@ -10,6 +10,7 @@ from astrbot.api import logger
 from .providers import (
     ProviderHandler,
     _sanitize_for_log,
+    _write_debug_entry,
     get_handler_classes,
 )
 
@@ -170,25 +171,37 @@ class StreamifyProxy:
             path_text = f"{path_text}/{sub_path.strip('/')}"
 
         if self.debug:
+            req_body_log = None
             try:
                 if req.method.upper() in {"POST", "PUT", "PATCH"}:
                     raw = await req.read()
                     if raw:
                         try:
                             body_obj = json.loads(raw)
+                            req_body_log = body_obj
                             sanitized = _sanitize_for_log(body_obj)
                             detail = json.dumps(sanitized, ensure_ascii=False)
                         except Exception:
                             detail = f"<{len(raw)} bytes, non-JSON>"
+                            req_body_log = detail
                     else:
                         detail = "<empty body>"
+                        req_body_log = detail
                 else:
                     qs = dict(req.query)
                     detail = json.dumps(qs, ensure_ascii=False) if qs else "<no query>"
+                    req_body_log = qs if qs else "<no query>"
                 logger.info(
                     "Streamify >>> %s %s -> %s\n%s",
                     req.method.upper(), path_text, provider.target_url, detail,
                 )
+                _write_debug_entry({
+                    "type": "request",
+                    "route": route_name,
+                    "method": req.method.upper(),
+                    "path": path_text,
+                    "body": req_body_log,
+                })
             except Exception as _exc:
                 logger.warning("Streamify debug: 记录请求日志失败: %s", _exc)
 
@@ -205,24 +218,39 @@ class StreamifyProxy:
                     elapsed_ms,
                 )
                 try:
+                    resp_body_log = None
                     if isinstance(response, web.Response) and response.body:
                         content_type = response.content_type or ""
                         if "json" in content_type or "text" in content_type:
                             body_text = response.body.decode("utf-8", errors="replace")
                             try:
                                 resp_obj = json.loads(body_text)
+                                resp_body_log = resp_obj
                                 sanitized_resp = _sanitize_for_log(resp_obj)
                                 resp_detail = json.dumps(sanitized_resp, ensure_ascii=False)
                             except Exception:
                                 resp_detail = body_text[:2000]
+                                resp_body_log = resp_detail
                         else:
                             resp_detail = f"<{len(response.body)} bytes, {content_type}>"
+                            resp_body_log = resp_detail
                     else:
                         resp_detail = "<streaming response>"
                     logger.info(
                         "Streamify <<< %s %s status=%s elapsed=%dms\n%s",
                         req.method.upper(), path_text, response.status, elapsed_ms, resp_detail,
                     )
+                    # 非流式响应写入文件日志（流式内容由 handler 层的 _proxy_stream 记录）
+                    if resp_body_log is not None:
+                        _write_debug_entry({
+                            "type": "response",
+                            "route": route_name,
+                            "method": req.method.upper(),
+                            "path": path_text,
+                            "status": response.status,
+                            "elapsed_ms": elapsed_ms,
+                            "body": resp_body_log,
+                        })
                 except Exception as _exc:
                     logger.warning("Streamify debug: 记录响应日志失败: %s", _exc)
             return response

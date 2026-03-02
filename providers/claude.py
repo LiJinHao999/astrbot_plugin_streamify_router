@@ -274,7 +274,9 @@ class ClaudeHandler(ProviderHandler, ClaudeFakeNonStream, ClaudeFCEnhance):
             fn_name = failed.get("name", "")
             extracted = await self._extract_args_as_json(clean_body, fn_name, sub_path, headers)
             if extracted is not None:
+                _before = failed.get("input", {})
                 self._patch_function_call_args(result, fn_name, extracted)
+                self._log_fc_modify("claude", 1, fn_name, _before, extracted)
                 if self.debug:
                     logger.info("Streamify [Layer1]: 成功提取 Claude 工具 %s 参数(流式)", fn_name)
                 await self._write_tc_events(client, result, start_idx, msg_meta)
@@ -309,7 +311,9 @@ class ClaudeHandler(ProviderHandler, ClaudeFakeNonStream, ClaudeFCEnhance):
                 fn_name = failed.get("name", "")
                 extracted = await self._extract_args_as_json(clean_body, fn_name, sub_path, headers)
                 if extracted is not None:
+                    _before = failed.get("input", {})
                     self._patch_function_call_args(result, fn_name, extracted)
+                    self._log_fc_modify("claude", 1, fn_name, _before, extracted)
                     await self._write_tc_events(client, result, start_idx, msg_meta)
                     await client.write_eof()
                     return client
@@ -350,6 +354,7 @@ class ClaudeHandler(ProviderHandler, ClaudeFakeNonStream, ClaudeFCEnhance):
                             "Streamify [Layer2]: 修正 Claude 工具 %s 的参数: %s",
                             tool_name, extracted,
                         )
+                    self._log_fc_modify("claude", 2, tool_name, "{}", extracted)
                     self._remember_hint_tool(tool_name)
                     result = self._build_corrected_tool_response(
                         tool_use_id, tool_name, extracted, body.get("model", "")
@@ -404,7 +409,9 @@ class ClaudeHandler(ProviderHandler, ClaudeFakeNonStream, ClaudeFCEnhance):
                 clean_body, function_name, sub_path, headers
             )
             if extracted is not None:
+                _before = failed_tc.get("input", {})
                 self._patch_function_call_args(result, function_name, extracted)
+                self._log_fc_modify("claude", 1, function_name, _before, extracted)
                 if self.debug:
                     logger.info(
                         "Streamify [Layer1]: 成功提取 Claude 工具 %s 的参数: %s",
@@ -448,7 +455,9 @@ class ClaudeHandler(ProviderHandler, ClaudeFakeNonStream, ClaudeFCEnhance):
                     clean_body, function_name, sub_path, headers
                 )
                 if extracted is not None:
+                    _before = failed_tc.get("input", {})
                     self._patch_function_call_args(result, function_name, extracted)
+                    self._log_fc_modify("claude", 1, function_name, _before, extracted)
                     if self.debug:
                         logger.info(
                             "Streamify [Layer1]: 成功提取 Claude 工具 %s 的参数: %s",

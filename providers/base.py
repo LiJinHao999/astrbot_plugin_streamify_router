@@ -1,3 +1,4 @@
+import datetime
 import json
 import pathlib
 import re
@@ -37,6 +38,31 @@ _FC_FAILURE_MSG = "工具调用失败，请如实告诉用户情况"
 
 def _resolve_plugin_data_dir() -> pathlib.Path:
     return pathlib.Path(get_astrbot_data_path()) / "plugin_data" / _PLUGIN_NAME
+
+
+def _get_debug_log_dir() -> pathlib.Path:
+    """返回 debug_log 目录路径（惰性创建）。"""
+    d = _resolve_plugin_data_dir() / "debug_log"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def _write_debug_entry(entry: dict) -> None:
+    """追加 JSON 行到当天 debug 日志文件。自动对 body 字段调用 _sanitize_for_log 脱敏。"""
+    entry = dict(entry)
+    if "body" in entry and isinstance(entry["body"], (dict, list)):
+        entry["body"] = _sanitize_for_log(entry["body"])
+    if "ts" not in entry:
+        entry["ts"] = datetime.datetime.now().isoformat()
+    try:
+        log_dir = _get_debug_log_dir()
+        today = datetime.date.today().isoformat()
+        log_file = log_dir / f"debug_{today}.log"
+        line = json.dumps(entry, ensure_ascii=False)
+        with open(log_file, "a", encoding="utf-8") as f:
+            f.write(line + "\n")
+    except Exception as exc:
+        logger.warning("写入 debug 日志失败: %s", exc)
 
 
 def _sanitize_for_log(obj: Any, _depth: int = 0) -> Any:
@@ -101,6 +127,25 @@ class ProviderHandler:
             )
         except Exception as exc:
             logger.warning("Failed to save hint tools: %s", exc)
+
+    def _log_fc_modify(self, route: str, layer: int, tool_name: str, before_args: Any, after_args: Any) -> None:
+        """记录 FC 修复前后的参数对比到 debug 日志文件。"""
+        if not self.debug:
+            return
+
+        def _to_str(v: Any) -> str:
+            if isinstance(v, str):
+                return v
+            return json.dumps(v, ensure_ascii=False)
+
+        _write_debug_entry({
+            "type": "fc_modify",
+            "route": route,
+            "layer": layer,
+            "tool": tool_name,
+            "before": _to_str(before_args),
+            "after": _to_str(after_args),
+        })
 
     @staticmethod
     def _normalize_timeout(value: Any, default: float = 120.0) -> float:
@@ -214,11 +259,57 @@ class ProviderHandler:
             response = web.StreamResponse(status=resp.status, headers=stream_headers)
             await response.prepare(req)
 
+            stream_chunks: Optional[List[bytes]] = [] if self.debug else None
+            stream_start = time.perf_counter()
+
             async for chunk in resp.content.iter_any():
                 await response.write(chunk)
+                if stream_chunks is not None:
+                    stream_chunks.append(chunk)
 
             await response.write_eof()
+
+            if stream_chunks is not None:
+                self._log_stream_to_file(req, sub_path, resp.status, stream_start, stream_chunks)
+
             return response
+
+    def _log_stream_to_file(
+        self,
+        req: web.Request,
+        sub_path: str,
+        status: int,
+        start_time: float,
+        chunks: List[bytes],
+    ) -> None:
+        """将缓冲的流式响应内容脱敏后写入 debug 日志文件。"""
+        elapsed_ms = int((time.perf_counter() - start_time) * 1000)
+        route = req.match_info.get("route_name", "")
+        path_text = f"/{route}/{sub_path.strip('/')}" if route else sub_path
+
+        raw_text = b"".join(chunks).decode("utf-8", errors="replace")
+        sanitized_lines: List[str] = []
+        for line in raw_text.splitlines():
+            if line.startswith("data:"):
+                payload = line[5:].strip()
+                try:
+                    obj = json.loads(payload)
+                    sanitized = _sanitize_for_log(obj)
+                    sanitized_lines.append(f"data: {json.dumps(sanitized, ensure_ascii=False)}")
+                    continue
+                except Exception:
+                    pass
+            sanitized_lines.append(line)
+
+        _write_debug_entry({
+            "type": "stream_response",
+            "route": route,
+            "method": req.method.upper(),
+            "path": path_text,
+            "status": status,
+            "elapsed_ms": elapsed_ms,
+            "body": "\n".join(sanitized_lines),
+        })
 
     async def _iter_sse_events(
         self, resp: ClientResponse

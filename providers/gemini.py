@@ -165,7 +165,9 @@ class GeminiHandler(ProviderHandler, GeminiFakeNonStream, GeminiFCEnhance):
                     clean_body, failed_fc.get("name", ""), stream_path, headers, params
                 )
                 if extracted is not None:
+                    _before = failed_fc.get("args", {})
                     self._patch_function_call_args(response_data, failed_fc.get("name", ""), extracted)
+                    self._log_fc_modify("gemini", 1, failed_fc.get("name", ""), _before, extracted)
                     if self.debug:
                         logger.info("Streamify [Layer1]: 成功提取 Gemini 工具 %s 参数(流式)", failed_fc.get("name"))
                     await client.write(f"data: {json.dumps(response_data)}\n\n".encode())
@@ -208,7 +210,9 @@ class GeminiHandler(ProviderHandler, GeminiFakeNonStream, GeminiFCEnhance):
                         clean_body, retry_failed_fc.get("name", ""), stream_path, headers, params
                     )
                     if extracted is not None:
+                        _before = retry_failed_fc.get("args", {})
                         self._patch_function_call_args(response_data, retry_failed_fc.get("name", ""), extracted)
+                        self._log_fc_modify("gemini", 1, retry_failed_fc.get("name", ""), _before, extracted)
                         await client.write(f"data: {json.dumps(response_data)}\n\n".encode())
                         await client.write_eof()
                         return client
@@ -279,6 +283,7 @@ class GeminiHandler(ProviderHandler, GeminiFakeNonStream, GeminiFCEnhance):
                             "Streamify [Layer2]: 修正 Gemini 工具 %s 的参数: %s",
                             tool_name, extracted,
                         )
+                    self._log_fc_modify("gemini", 2, tool_name, "{}", extracted)
                     self._remember_hint_tool(tool_name)
                     args_hint = (
                         f"重要：你必须使用以下参数调用工具 `{tool_name}`：\n"
@@ -346,7 +351,9 @@ class GeminiHandler(ProviderHandler, GeminiFakeNonStream, GeminiFCEnhance):
                     clean_body, failed_fc.get("name", ""), stream_path, headers, params
                 )
                 if extracted is not None:
+                    _before = failed_fc.get("args", {})
                     self._patch_function_call_args(response_data, failed_fc.get("name", ""), extracted)
+                    self._log_fc_modify("gemini", 1, failed_fc.get("name", ""), _before, extracted)
                     if self.debug:
                         logger.info(
                             "Streamify [Layer1]: 成功提取 Gemini 工具 %s 的参数: %s",
@@ -411,9 +418,11 @@ class GeminiHandler(ProviderHandler, GeminiFakeNonStream, GeminiFCEnhance):
                         clean_body, retry_failed_fc.get("name", ""), stream_path, headers, params
                     )
                     if extracted is not None:
+                        _before = retry_failed_fc.get("args", {})
                         self._patch_function_call_args(
                             response_data, retry_failed_fc.get("name", ""), extracted
                         )
+                        self._log_fc_modify("gemini", 1, retry_failed_fc.get("name", ""), _before, extracted)
                         if self.debug:
                             logger.info(
                                 "Streamify [Layer1]: 成功提取 Gemini 工具 %s 的参数: %s",
