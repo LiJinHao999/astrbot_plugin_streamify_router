@@ -128,7 +128,7 @@ class ProviderHandler:
         except Exception as exc:
             logger.warning("Failed to save hint tools: %s", exc)
 
-    def _log_fc_modify(self, route: str, layer: int, tool_name: str, before_args: Any, after_args: Any) -> None:
+    def _log_fc_modify(self, route: str, layer: int, tool_name: str, before_args: Any, after_args: Any, *, hint: str = "", context: Any = None) -> None:
         """记录 FC 修复前后的参数对比到 debug 日志文件。"""
         if not self.debug:
             return
@@ -138,14 +138,19 @@ class ProviderHandler:
                 return v
             return json.dumps(v, ensure_ascii=False)
 
-        _write_debug_entry({
+        entry: Dict[str, Any] = {
             "type": "fc_modify",
             "route": route,
             "layer": layer,
             "tool": tool_name,
             "before": _to_str(before_args),
             "after": _to_str(after_args),
-        })
+        }
+        if hint:
+            entry["hint"] = hint
+        if context is not None:
+            entry["context"] = _sanitize_for_log(context)
+        _write_debug_entry(entry)
 
     @staticmethod
     def _normalize_timeout(value: Any, default: float = 120.0) -> float:

@@ -235,7 +235,9 @@ class OpenAIChatHandler(ProviderHandler, OpenAIFakeNonStream, OpenAIFCEnhance):
             if extracted is not None:
                 _before = (failed.get("function") or {}).get("arguments", "{}")
                 self._patch_function_call_args(result, fn_name, extracted)
-                self._log_fc_modify("openai", 1, fn_name, _before, extracted)
+                self._log_fc_modify("openai", 1, fn_name, _before, extracted,
+                    hint=self._build_extract_hint(clean_body.get("tools", []), fn_name),
+                    context=clean_body.get("messages", []))
                 if self.debug:
                     logger.info("Streamify [Layer1]: 成功提取 OpenAI 工具 %s 参数(流式)", fn_name)
                 await self._write_tc_sse(client, result, base_meta)
@@ -274,7 +276,9 @@ class OpenAIChatHandler(ProviderHandler, OpenAIFakeNonStream, OpenAIFCEnhance):
                 if extracted is not None:
                     _before = (failed.get("function") or {}).get("arguments", "{}")
                     self._patch_function_call_args(result, fn_name, extracted)
-                    self._log_fc_modify("openai", 1, fn_name, _before, extracted)
+                    self._log_fc_modify("openai", 1, fn_name, _before, extracted,
+                        hint=self._build_extract_hint(clean_body.get("tools", []), fn_name),
+                        context=clean_body.get("messages", []))
                     await self._write_tc_sse(client, result, base_meta)
                     await client.write(b"data: [DONE]\n\n")
                     await client.write_eof()
@@ -319,7 +323,9 @@ class OpenAIChatHandler(ProviderHandler, OpenAIFakeNonStream, OpenAIFCEnhance):
                             "Streamify [Layer2]: 修正 OpenAI 工具 %s 的参数: %s",
                             tool_name, extracted,
                         )
-                    self._log_fc_modify("openai", 2, tool_name, "{}", extracted)
+                    self._log_fc_modify("openai", 2, tool_name, "{}", extracted,
+                        hint=self._build_extract_hint(body.get("tools", []), tool_name),
+                        context=ctx_messages)
                     self._remember_hint_tool(tool_name)
                     result = self._build_corrected_tool_response(
                         tool_call_id, tool_name, extracted, body.get("model", "")
@@ -379,7 +385,9 @@ class OpenAIChatHandler(ProviderHandler, OpenAIFakeNonStream, OpenAIFCEnhance):
             if extracted is not None:
                 _before = (failed_tc.get("function") or {}).get("arguments", "{}")
                 self._patch_function_call_args(result, function_name, extracted)
-                self._log_fc_modify("openai", 1, function_name, _before, extracted)
+                self._log_fc_modify("openai", 1, function_name, _before, extracted,
+                    hint=self._build_extract_hint(clean_body.get("tools", []), function_name),
+                    context=clean_body.get("messages", []))
                 if self.debug:
                     logger.info(
                         "Streamify [Layer1]: 成功提取 OpenAI 工具 %s 的参数: %s",
@@ -425,7 +433,9 @@ class OpenAIChatHandler(ProviderHandler, OpenAIFakeNonStream, OpenAIFCEnhance):
                 if extracted is not None:
                     _before = (failed_tc.get("function") or {}).get("arguments", "{}")
                     self._patch_function_call_args(result, function_name, extracted)
-                    self._log_fc_modify("openai", 1, function_name, _before, extracted)
+                    self._log_fc_modify("openai", 1, function_name, _before, extracted,
+                        hint=self._build_extract_hint(clean_body.get("tools", []), function_name),
+                        context=clean_body.get("messages", []))
                     if self.debug:
                         logger.info(
                             "Streamify [Layer1]: 成功提取 OpenAI 工具 %s 的参数: %s",

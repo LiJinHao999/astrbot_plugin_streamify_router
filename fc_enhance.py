@@ -106,6 +106,23 @@ class OpenAIFCEnhance:
         return None
 
     @staticmethod
+    def _build_extract_hint(tools: List[Dict[str, Any]], function_name: str) -> str:
+        """构建 extract_args 使用的提示词，用于 debug 日志。"""
+        func_desc = ""
+        func_schema: Dict[str, Any] = {}
+        for tool in tools:
+            fn = (tool.get("function") or {})
+            if fn.get("name") == function_name:
+                func_desc = fn.get("description", "")
+                func_schema = fn.get("parameters", {})
+                break
+        return _EXTRACT_PROMPT_TEMPLATE.format(
+            function_name=function_name,
+            func_desc=func_desc,
+            func_schema=json.dumps(func_schema, ensure_ascii=False),
+        )
+
+    @staticmethod
     def _find_failed_function_call(
         response_data: Dict[str, Any],
         tools: Optional[List[Dict[str, Any]]] = None,
@@ -328,6 +345,22 @@ class ClaudeFCEnhance:
         return None
 
     @staticmethod
+    def _build_extract_hint(tools: List[Dict[str, Any]], function_name: str) -> str:
+        """构建 extract_args 使用的提示词，用于 debug 日志。"""
+        func_desc = ""
+        func_schema: Dict[str, Any] = {}
+        for tool in tools:
+            if isinstance(tool, dict) and tool.get("name") == function_name:
+                func_desc = tool.get("description", "")
+                func_schema = tool.get("input_schema", {})
+                break
+        return _EXTRACT_PROMPT_TEMPLATE.format(
+            function_name=function_name,
+            func_desc=func_desc,
+            func_schema=json.dumps(func_schema, ensure_ascii=False),
+        )
+
+    @staticmethod
     def _find_failed_function_call(
         response_data: Dict[str, Any],
         tools: Optional[List[Dict[str, Any]]] = None,
@@ -546,6 +579,23 @@ class GeminiFCEnhance:
         return None
 
     @staticmethod
+    def _build_extract_hint(tools: List[Dict[str, Any]], function_name: str) -> str:
+        """构建 extract_args 使用的提示词，用于 debug 日志。"""
+        func_desc = ""
+        func_schema: Dict[str, Any] = {}
+        for tool in tools:
+            for fd in tool.get("functionDeclarations", []):
+                if fd.get("name") == function_name:
+                    func_desc = fd.get("description", "")
+                    func_schema = fd.get("parameters", {})
+                    break
+        return _EXTRACT_PROMPT_TEMPLATE.format(
+            function_name=function_name,
+            func_desc=func_desc,
+            func_schema=json.dumps(func_schema, ensure_ascii=False),
+        )
+
+    @staticmethod
     def _has_failed_function_call(
         response_data: Dict[str, Any],
         tools: Optional[List[Dict[str, Any]]] = None,
@@ -759,6 +809,22 @@ class OpenAIResponsesFCEnhance:
             if tool.get("name") == tool_name:
                 return tool.get("parameters")
         return None
+
+    @staticmethod
+    def _build_extract_hint(tools: List[Dict[str, Any]], function_name: str) -> str:
+        """构建 extract_args 使用的提示词，用于 debug 日志。"""
+        func_desc = ""
+        func_schema: Dict[str, Any] = {}
+        for tool in tools:
+            if tool.get("name") == function_name:
+                func_desc = tool.get("description", "")
+                func_schema = tool.get("parameters", {})
+                break
+        return _EXTRACT_PROMPT_TEMPLATE.format(
+            function_name=function_name,
+            func_desc=func_desc,
+            func_schema=json.dumps(func_schema, ensure_ascii=False),
+        )
 
     @staticmethod
     def _find_failed_function_call(
