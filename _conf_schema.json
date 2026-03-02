@@ -31,7 +31,7 @@
       "(?i)must not be empty",
       "(?i)\\bempty\\b"
     ],
-    "hint": "工具错误识别正则表达式列表，匹配任一即触发 Layer 2 修复；可自由增删改"
+    "hint": "工具错误识别正则表达式列表，匹配任一即触发注入修复；可自由增删改"
   },
   "fix_retries": {
     "description": "最多重试次数",
@@ -50,7 +50,7 @@
     "description": "FC 提示词注入时传入的对话轮数",
     "type": "int",
     "default": 1,
-    "hint": "提取工具参数时，传入最近几轮用户消息作为上下文；轮数越多上下文越丰富但 token 消耗越大；0 表示不传入用户对话"
+    "hint": "提取工具参数时，传入最近几轮用户消息作为上下文；轮数越多上下文越丰富；0 表示不传入用户对话。推荐设为 1 "
   },
     "debug": {
     "description": "启用调试日志",
@@ -69,6 +69,7 @@
           "route_name": {
             "description": "路由名称",
             "type": "string",
+            "default": "openai",
             "hint": "用于本地路径：/<路由名称>"
           },
           "target_url": {
@@ -80,7 +81,7 @@
           "forward_url": {
             "description": "生成的本地转发 URL",
             "type": "string",
-            "default": "",
+            "default": "http://127.0.0.1:23456/newapi",
             "hint": "由端口 + 路由名称自动生成"
           },
           "proxy_url": {
@@ -93,7 +94,7 @@
             "description": "假非流（路由级别覆盖）",
             "type": "bool",
             "default": true,
-            "hint": "Ollama 等本地模型请设为 false（Ollama 流式接口会静默丢弃工具调用）；OpenAI / Gemini / Claude 等云端接口保持 true"
+            "hint": "Ollama 等本地模型请设为 false（Ollama 流式接口可能会静默丢弃工具调用）；OpenAI / Gemini / Claude 等云端接口保持 true"
           }
         }
       }
