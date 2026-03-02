@@ -1079,15 +1079,43 @@ class GeminiFCEnhance:
         if "safetySettings" in original_body:
             extract_body["safetySettings"] = original_body["safetySettings"]
 
+        logger.info(
+            "Streamify [extract]: 工具 %s, contents %d 条, system(前200): %s",
+            function_name, len(extract_contents),
+            tool_system[:200],
+        )
+        # 打印每条 content 的角色和文本前100字
+        for ci, c in enumerate(extract_contents):
+            _role = c.get("role", "?")
+            _txt = ""
+            for _p in c.get("parts", []):
+                if isinstance(_p, dict) and "text" in _p:
+                    _txt = _p["text"][:100]
+                    break
+            logger.info("Streamify [extract]:   [%d] %s: %s", ci, _role, _txt)
+
         try:
+            url = self._build_url(stream_path)  # type: ignore[attr-defined]
+            logger.info("Streamify [extract]: 请求 URL: %s", url)
             async with self._request(  # type: ignore[attr-defined]
                 "POST",
-                self._build_url(stream_path),  # type: ignore[attr-defined]
+                url,
                 json=extract_body,
                 headers=headers,
                 params=params,
             ) as resp:
                 if resp.status != 200:
+                    err_text = ""
+                    try:
+                        err_text = await resp.text()
+                        if len(err_text) > 500:
+                            err_text = err_text[:500] + "…"
+                    except Exception:
+                        pass
+                    logger.warning(
+                        "Streamify [extract]: API 返回 %d, 工具 %s, 详情: %s",
+                        resp.status, function_name, err_text,
+                    )
                     return None
                 text_parts: List[str] = []
                 async for _event, data in self._iter_sse_events(resp):  # type: ignore[attr-defined]
@@ -1103,16 +1131,29 @@ class GeminiFCEnhance:
                     except Exception:
                         continue
                 if not text_parts:
+                    logger.warning("Streamify [extract]: 工具 %s 响应无文本", function_name)
                     return None
                 text = "".join(text_parts).strip()
+                logger.info(
+                    "Streamify [extract]: 工具 %s 原始响应(前300): %s",
+                    function_name, text[:300],
+                )
                 if text.startswith("```"):
                     lines = text.splitlines()
                     text = "\n".join(
                         lines[1:-1] if lines[-1].strip() == "```" else lines[1:]
                     )
                 parsed = json.loads(text)
-                return parsed if isinstance(parsed, dict) and parsed else None
-        except Exception:
+                if isinstance(parsed, dict) and parsed:
+                    logger.info(
+                        "Streamify [extract]: 工具 %s 提取成功: %s",
+                        function_name, json.dumps(parsed, ensure_ascii=False),
+                    )
+                    return parsed
+                logger.warning("Streamify [extract]: 工具 %s 解析结果为空", function_name)
+                return None
+        except Exception as exc:
+            logger.warning("Streamify [extract]: 工具 %s 异常: %s", function_name, exc)
             return None
 
     @staticmethod
