@@ -334,6 +334,7 @@ class ClaudeHandler(ProviderHandler, ClaudeFakeNonStream, ClaudeFCEnhance):
                     return client
 
             fail_name = failed_tc.get("name", "unknown") if failed_tc else "unknown"
+            logger.warning("Streamify: 工具 %s 参数在 %d 次重试后仍为空(流式)", fail_name, self.fix_retries)
             _inject_fc_failure_text_claude(result, fail_name)
             await self._write_tc_events(client, result, start_idx, msg_meta)
             await client.write_eof()
@@ -511,6 +512,7 @@ class ClaudeHandler(ProviderHandler, ClaudeFakeNonStream, ClaudeFCEnhance):
                     return web.json_response(result)
 
             _fail_name = failed_tc.get("name", "unknown") if failed_tc else "unknown"
+            logger.warning("Streamify: 工具 %s 参数在 %d 次重试后仍为空", _fail_name, self.fix_retries)
             _inject_fc_failure_text_claude(result, _fail_name)
 
         return web.json_response(result)

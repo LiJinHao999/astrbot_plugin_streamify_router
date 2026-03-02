@@ -298,6 +298,7 @@ class OpenAIChatHandler(ProviderHandler, OpenAIFakeNonStream, OpenAIFCEnhance):
 
             # 全部重试失败，注入失败提示
             fail_name = (failed_tc.get("function") or {}).get("name", "unknown") if failed_tc else "unknown"
+            logger.warning("Streamify: 工具 %s 参数在 %d 次重试后仍为空(流式)", fail_name, self.fix_retries)
             _inject_fc_failure_text_openai(result, fail_name)
             await self._write_tc_sse(client, result, base_meta)
             await client.write(b"data: [DONE]\n\n")
@@ -473,6 +474,7 @@ class OpenAIChatHandler(ProviderHandler, OpenAIFakeNonStream, OpenAIFCEnhance):
                     return web.json_response(result)
 
             _fail_name = (failed_tc.get("function") or {}).get("name", "unknown") if failed_tc else "unknown"
+            logger.warning("Streamify: 工具 %s 参数在 %d 次重试后仍为空", _fail_name, self.fix_retries)
             _inject_fc_failure_text_openai(result, _fail_name)
 
         return web.json_response(result)

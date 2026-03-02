@@ -391,6 +391,7 @@ class OpenAIResponsesHandler(ProviderHandler, OpenAIResponsesFakeNonStream, Open
                     return web.json_response(result)
 
             fail_name = failed_fc.get("name", "unknown") if failed_fc else "unknown"
+            logger.warning("Streamify: 工具 %s 参数在 %d 次重试后仍为空", fail_name, self.fix_retries)
             _inject_fc_failure_text_responses(result, fail_name)
 
         return web.json_response(result)

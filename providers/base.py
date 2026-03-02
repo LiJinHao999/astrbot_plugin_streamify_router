@@ -129,22 +129,32 @@ class ProviderHandler:
             logger.warning("Failed to save hint tools: %s", exc)
 
     def _log_fc_modify(self, route: str, layer: int, tool_name: str, before_args: Any, after_args: Any, *, hint: str = "", context: Any = None) -> None:
-        """记录 FC 修复前后的参数对比到 debug 日志文件。"""
-        if not self.debug:
-            return
+        """记录 FC 修复前后的参数对比。始终输出简要日志，debug 模式下额外写入文件。"""
 
         def _to_str(v: Any) -> str:
             if isinstance(v, str):
                 return v
             return json.dumps(v, ensure_ascii=False)
 
+        before_str = _to_str(before_args)
+        after_str = _to_str(after_args)
+
+        # 始终输出到控制台
+        logger.info(
+            "Streamify [Layer%d] %s: 工具 %s 参数重写 %s -> %s",
+            layer, route, tool_name, before_str, after_str,
+        )
+
+        if not self.debug:
+            return
+
         entry: Dict[str, Any] = {
             "type": "fc_modify",
             "route": route,
             "layer": layer,
             "tool": tool_name,
-            "before": _to_str(before_args),
-            "after": _to_str(after_args),
+            "before": before_str,
+            "after": after_str,
         }
         if hint:
             entry["hint"] = hint
