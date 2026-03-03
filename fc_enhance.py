@@ -2,8 +2,13 @@ import json
 import re
 import time
 from typing import Any, Dict, List, Optional, Pattern, Tuple
+
+import aiohttp
 from astrbot.api import logger
 from .fake_non_stream import _EMPTY_ARGS_HINT
+
+# _extract_args_as_json 专用超时：提取请求只做简短 JSON 输出，无需等太久
+_EXTRACT_TIMEOUT = aiohttp.ClientTimeout(total=30, connect=10, sock_connect=10, sock_read=30)
 
 # 默认工具错误识别正则列表（用户可在配置中覆盖）
 _DEFAULT_TOOL_ERROR_PATTERNS: List[str] = [
@@ -397,6 +402,7 @@ class OpenAIFCEnhance:
                 self._build_url(sub_path),  # type: ignore[attr-defined]
                 json=extract_body,
                 headers=headers,
+                timeout=_EXTRACT_TIMEOUT,
             ) as resp:
                 if resp.status != 200:
                     return None
@@ -749,6 +755,7 @@ class ClaudeFCEnhance:
                 self._build_url(sub_path),  # type: ignore[attr-defined]
                 json=extract_body,
                 headers=headers,
+                timeout=_EXTRACT_TIMEOUT,
             ) as resp:
                 if resp.status != 200:
                     return None
@@ -1107,6 +1114,7 @@ class GeminiFCEnhance:
                 json=extract_body,
                 headers=headers,
                 params=params,
+                timeout=_EXTRACT_TIMEOUT,
             ) as resp:
                 if resp.status != 200:
                     err_text = ""
@@ -1167,8 +1175,8 @@ class GeminiFCEnhance:
                             pos = idx + 1
                             continue
                     if parsed is None:
-                        logger.warning("Streamify [extract]: 工具 %s 响应中无 JSON 对象", function_name)
-                        return None
+                        logger.warning("Streamify [extract]: 工具 %s 响应中无 JSON 对象，返回空参数", function_name)
+                        return {}
                 if isinstance(parsed, dict) and parsed:
                     logger.info(
                         "Streamify [extract]: 工具 %s 提取成功: %s",
@@ -1473,6 +1481,7 @@ class OpenAIResponsesFCEnhance:
                 self._build_url(sub_path),  # type: ignore[attr-defined]
                 json=extract_body,
                 headers=headers,
+                timeout=_EXTRACT_TIMEOUT,
             ) as resp:
                 if resp.status != 200:
                     return None
