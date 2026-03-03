@@ -1087,7 +1087,7 @@ class GeminiFCEnhance:
         if not extract_contents:
             extract_contents.append({
                 "role": "user",
-                "parts": [{"text": f"请为工具 `{function_name}` 推断参数。"}],
+                "parts": [{"text": f"请为工具 `{function_name}` 推断参数。只推断单个参数关键词，尽量简洁"}],
             })
 
         self._last_extract_context = extract_contents  # type: ignore[attr-defined]
@@ -1412,7 +1412,7 @@ class OpenAIResponsesFCEnhance:
                 break
 
         model_reply_section = (
-            f"模型已生成的回复文本（请优先从中提取具体参数值）：\n{model_reply}\n"
+            f"模型已生成的回复文本：\n{model_reply}\n"
             if model_reply else ""
         )
 
