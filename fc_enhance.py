@@ -1177,12 +1177,12 @@ class GeminiFCEnhance:
                     parsed = json.loads(text)
                 except json.JSONDecodeError:
                     parsed = None
-                    # 只尝试前1000个字符中的 JSON
-                    search_text = text[:1000] if len(text) > 1000 else text
                     decoder = json.JSONDecoder()
                     pos = 0
-                    while pos < len(search_text):
-                        idx = search_text.find("{", pos)
+                    attempts = 0
+                    while pos < len(text) and attempts < 100:
+                        attempts += 1
+                        idx = text.find("{", pos)
                         if idx == -1:
                             break
                         try:
