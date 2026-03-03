@@ -1012,6 +1012,12 @@ class GeminiFCEnhance:
                 "parts": [{"text": "\n".join(context_lines)}],
             })
 
+        # 用用户消息文本做 key，新消息来了自动清空历史
+        context_key = "\n".join(context_lines) if context_lines else ""
+        if getattr(self, '_extract_context_key', None) != context_key:
+            self._extract_attempts = {}  # type: ignore[attr-defined]
+            self._extract_context_key = context_key  # type: ignore[attr-defined]
+
         # 从实例状态注入之前提取过的参数（不依赖 source_contents 中的 FC/FR）
         prev_attempts: List[Dict[str, Any]] = getattr(self, '_extract_attempts', {}).get(function_name, [])
         for prev_args in prev_attempts:
