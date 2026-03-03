@@ -144,6 +144,14 @@ class GeminiHandler(ProviderHandler, GeminiFakeNonStream, GeminiFCEnhance):
                                 if isinstance(p.get("text"), str):
                                     forwarded_text += p["text"]
                     fc_buffer.append(payload)
+                elif fc_detected:
+                    # FC 检测后的纯文本 payload，转发并累加
+                    for candidate in (payload.get("candidates") or []):
+                        for part in ((candidate.get("content") or {}).get("parts") or []):
+                            if isinstance(part.get("text"), str):
+                                forwarded_text += part["text"]
+                    await client.write(f"data: {json.dumps(payload)}\n\n".encode())
+                    fc_buffer.append(payload)
                 else:
                     # 累加已转发 payload 中的文本
                     for candidate in (payload.get("candidates") or []):
@@ -197,10 +205,12 @@ class GeminiHandler(ProviderHandler, GeminiFakeNonStream, GeminiFCEnhance):
                 await client.write(f"data: {json.dumps(text_payload)}\n\n".encode())
 
         fn_name = target_fc.get("name", "")
+        logger.info("Streamify [debug]: 准备调用 _extract_args_as_json，工具 %s", fn_name)
         extracted = await self._extract_args_as_json(
             clean_body, fn_name, stream_path, headers, params,
             model_reply=model_reply,
         )
+        logger.info("Streamify [debug]: _extract_args_as_json 返回，extracted 类型=%s, 值=%s", type(extracted).__name__, extracted)
         if extracted is not None:
             _before = target_fc.get("args", {})
             self._patch_function_call_args(response_data, fn_name, extracted)
