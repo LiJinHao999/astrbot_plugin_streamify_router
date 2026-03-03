@@ -976,12 +976,45 @@ class GeminiFCEnhance:
         )
         # 提取侧请求不做 trim：需要完整对话来收集 FC/FR 历史和原始用户文本
 
+        # 从 Gemini 格式的 contents 中提取该工具的 functionCall/functionResponse 历史
+        # 按出现顺序收集 FC 和 FR，然后顺序配对
+        fc_list: List[str] = []  # 每个 functionCall 的 args JSON
+        fr_list: List[str] = []  # 每个 functionResponse 的 response JSON
+        for item in source_contents:
+            if not isinstance(item, dict):
+                continue
+            for part in item.get("parts", []):
+                if not isinstance(part, dict):
+                    continue
+                fc = part.get("functionCall")
+                if isinstance(fc, dict) and fc.get("name") == function_name:
+                    fc_list.append(json.dumps(fc.get("args", {}), ensure_ascii=False))
+                fr = part.get("functionResponse")
+                if isinstance(fr, dict) and fr.get("name") == function_name:
+                    resp = fr.get("response", {})
+                    fr_list.append(json.dumps(resp, ensure_ascii=False))
+        history_entries: List[str] = []
+        for i, args_str in enumerate(fc_list):
+            res_str = fr_list[i] if i < len(fr_list) else ""
+            if len(res_str) > 500:
+                res_str = res_str[:500] + "…(截断)"
+            entry = f"- 参数: {args_str}"
+            if res_str:
+                entry += f"\n  结果: {res_str}"
+            history_entries.append(entry)
+        tool_history_section = ""
+        if history_entries:
+            tool_history_section = (
+                "以下是该工具之前的调用历史（参数和结果），请严格避免重复使用过去的参数，探索更多可能性(如更换关键词，将中文换为英文等)：\n"
+                + "\n".join(history_entries) + "\n"
+            )
+
         tool_system = _EXTRACT_PROMPT_TEMPLATE.format(
             function_name=function_name,
             func_desc=func_desc,
             func_schema=json.dumps(func_params_schema, ensure_ascii=False),
             model_reply_section=model_reply_section,
-            tool_history_section="",
+            tool_history_section=tool_history_section,
         )
 
         # 提取对话中的纯文本，去除 functionCall / functionResponse
