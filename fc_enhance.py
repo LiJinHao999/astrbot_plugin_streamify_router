@@ -1141,7 +1141,11 @@ class GeminiFCEnhance:
                     return {}
                 text_parts: List[str] = []
                 logger.info("Streamify [extract]: 开始读取 SSE 流")
+                chunk_count = 0
                 async for _event, data in self._iter_sse_events(resp):  # type: ignore[attr-defined]
+                    chunk_count += 1
+                    if chunk_count % 10 == 0:
+                        logger.info("Streamify [extract]: 已读取 %d 个 SSE 事件", chunk_count)
                     if not data:
                         continue
                     try:
@@ -1153,7 +1157,7 @@ class GeminiFCEnhance:
                                     text_parts.append(t)
                     except Exception:
                         continue
-                logger.info("Streamify [extract]: SSE 流读取完成，收集到 %d 个文本片段", len(text_parts))
+                logger.info("Streamify [extract]: SSE 流读取完成，总共 %d 个事件，收集到 %d 个文本片段", chunk_count, len(text_parts))
                 # 循环结束后检查
                 if not text_parts:
                     logger.warning("Streamify [extract]: 工具 %s 响应无文本，返回空参数", function_name)
