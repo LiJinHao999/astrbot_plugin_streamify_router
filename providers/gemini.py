@@ -185,11 +185,14 @@ class GeminiHandler(ProviderHandler, GeminiFakeNonStream, GeminiFCEnhance):
                 if isinstance(part.get("text"), str):
                     _reply_parts.append(part["text"])
         model_reply = forwarded_text + "".join(_reply_parts)
+        logger.info("Streamify [文本]: forwarded_text 长度=%d, _reply_parts 长度=%d, model_reply 长度=%d",
+                    len(forwarded_text), len("".join(_reply_parts)), len(model_reply))
 
         # 先发送未转发的文本（在提取参数之前）
         if model_reply and model_reply != forwarded_text:
             remaining_text = model_reply[len(forwarded_text):] if model_reply.startswith(forwarded_text) else model_reply
             if remaining_text:
+                logger.info("Streamify [文本]: 发送剩余文本，长度=%d, 内容(前50): %s", len(remaining_text), remaining_text[:50])
                 text_payload = {"candidates": [{"content": {"parts": [{"text": remaining_text}], "role": "model"}}]}
                 await client.write(f"data: {json.dumps(text_payload)}\n\n".encode())
 
