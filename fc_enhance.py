@@ -1128,7 +1128,7 @@ class GeminiFCEnhance:
                         "Streamify [extract]: API 返回 %d, 工具 %s, 详情: %s",
                         resp.status, function_name, err_text,
                     )
-                    return None
+                    return {}
                 text_parts: List[str] = []
                 async for _event, data in self._iter_sse_events(resp):  # type: ignore[attr-defined]
                     if not data:
@@ -1143,8 +1143,8 @@ class GeminiFCEnhance:
                     except Exception:
                         continue
                 if not text_parts:
-                    logger.warning("Streamify [extract]: 工具 %s 响应无文本", function_name)
-                    return None
+                    logger.warning("Streamify [extract]: 工具 %s 响应无文本，返回空参数", function_name)
+                    return {}
                 text = "".join(text_parts).strip()
                 logger.info(
                     "Streamify [extract]: 工具 %s 原始响应(前300): %s",
