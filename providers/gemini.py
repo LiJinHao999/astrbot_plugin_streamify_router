@@ -178,6 +178,7 @@ class GeminiHandler(ProviderHandler, GeminiFakeNonStream, GeminiFCEnhance):
             if target_fc is not None:
                 logger.info("Streamify [全部拦截]: 拦截 Gemini 工具 %s，尝试重写参数(流式)", target_fc.get("name", ""))
 
+        logger.info("Streamify [debug]: 检查 target_fc，is None=%s", target_fc is None)
         if target_fc is None:
             # 无需修复：重放原始 FC 事件
             for payload in fc_buffer:
@@ -186,6 +187,7 @@ class GeminiHandler(ProviderHandler, GeminiFakeNonStream, GeminiFCEnhance):
             return client
 
         # 需要修复
+        logger.info("Streamify [debug]: 开始提取模型回复文本")
         # 提取模型回复文本（已转发文本 + FC 响应中的文本 parts）
         _reply_parts = []
         for candidate in response_data.get("candidates", []):
