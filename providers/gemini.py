@@ -137,6 +137,7 @@ class GeminiHandler(ProviderHandler, GeminiFakeNonStream, GeminiFCEnhance):
                     for candidate in (payload.get("candidates") or []):
                         text_parts = [p for p in ((candidate.get("content") or {}).get("parts") or []) if "text" in p]
                         if text_parts:
+                            logger.info("Streamify [文本转发]: 检测到 FC payload 中的文本，转发 %d 个 text parts", len(text_parts))
                             text_payload = {"candidates": [{"content": {"parts": text_parts, "role": "model"}}]}
                             await client.write(f"data: {json.dumps(text_payload)}\n\n".encode())
                             for p in text_parts:
