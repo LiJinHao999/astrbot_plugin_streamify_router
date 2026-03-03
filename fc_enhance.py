@@ -1087,7 +1087,7 @@ class GeminiFCEnhance:
         if not extract_contents:
             extract_contents.append({
                 "role": "user",
-                "parts": [{"text": f"请为工具 `{function_name}` 推断参数。只推断单个参数关键词，尽量简洁"}],
+                "parts": [{"text": f"请为工具 `{function_name}` 推断参数。只推断单个参数关键词，如果参数和搜索有关，要尽量简洁，如果参数和文档有关，要尽量正确且详细"}],
             })
 
         self._last_extract_context = extract_contents  # type: ignore[attr-defined]
