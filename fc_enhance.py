@@ -1140,6 +1140,7 @@ class GeminiFCEnhance:
                     )
                     return {}
                 text_parts: List[str] = []
+                logger.info("Streamify [extract]: 开始读取 SSE 流")
                 async for _event, data in self._iter_sse_events(resp):  # type: ignore[attr-defined]
                     if not data:
                         continue
@@ -1152,6 +1153,8 @@ class GeminiFCEnhance:
                                     text_parts.append(t)
                     except Exception:
                         continue
+                logger.info("Streamify [extract]: SSE 流读取完成，收集到 %d 个文本片段", len(text_parts))
+                # 循环结束后检查
                 if not text_parts:
                     logger.warning("Streamify [extract]: 工具 %s 响应无文本，返回空参数", function_name)
                     return {}
